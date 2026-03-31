@@ -1,3 +1,17 @@
+---
+title: Data Cleaning Pipeline OpenEnv
+emoji: 🧹
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+tags:
+  - openenv
+  - reinforcement-learning
+  - data-cleaning
+  - rl-environment
+---
+
 # Data Cleaning Pipeline — OpenEnv
 
 An RL environment where AI agents learn to clean real-world datasets.
@@ -5,7 +19,8 @@ Agents interact through the standard OpenEnv `reset()` / `step()` / `state()` AP
 receiving dense reward signals at every cleaning action — not just at episode end.
 
 [![OpenEnv](https://img.shields.io/badge/OpenEnv-compatible-blue)](https://github.com/meta-pytorch/OpenEnv)
-[![HF Space](https://img.shields.io/badge/HuggingFace-Space-yellow)](https://huggingface.co/spaces)
+[![HF Space](https://img.shields.io/badge/HuggingFace-Space-yellow)](https://huggingface.co/spaces/revanth11/data-cleaning-env)
+[![GitHub](https://img.shields.io/badge/GitHub-grevanth1105-black?logo=github)](https://github.com/grevanth1105/OpenEnv-Data-Cleaning-Pipeline)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 ---
@@ -17,6 +32,9 @@ estimates put it at 60–80% of a data scientist's time. It is rule-rich, contex
 and hard to automate with simple heuristics. This makes it an ideal environment for training
 and evaluating LLM-based agents: the task is real, the feedback is measurable, and the
 difficulty scales naturally from trivial to frontier-model-challenging.
+
+Datasets are procedurally generated with controlled noise injection,
+ensuring reproducible episodes and deterministic grading.
 
 ---
 
@@ -150,8 +168,8 @@ Total episode reward range: `[-1.0, 1.0]` per step.
 ### Local — Uvicorn
 
 ```bash
-git clone https://huggingface.co/spaces/revanth11/data-cleaning-env
-cd data-cleaning-env
+git clone https://github.com/grevanth1105/OpenEnv-Data-Cleaning-Pipeline.git
+cd OpenEnv-Data-Cleaning-Pipeline
 pip install -r requirements.txt
 uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -169,12 +187,11 @@ curl http://localhost:8000/health
 # {"status": "healthy", "sessions": 0}
 ```
 
-### HF Spaces
+### HF Spaces — Pull from registry
 
 ```bash
-# Pull directly from registry
-docker pull registry.hf.space/revanthk11-data-cleaning-env:latest
-docker run -d -p 8000:7860 registry.hf.space/revanthk11-data-cleaning-env:latest
+docker pull registry.hf.space/revanth11-data-cleaning-env:latest
+docker run -d -p 8000:7860 registry.hf.space/revanth11-data-cleaning-env:latest
 ```
 
 ---
@@ -187,15 +204,12 @@ docker run -d -p 8000:7860 registry.hf.space/revanthk11-data-cleaning-env:latest
 from client import DataCleaningEnv
 from models import DataCleaningAction
 
-with DataCleaningEnv("http://localhost:8000").sync() as env:
-    # List tasks
+with DataCleaningEnv("https://revanth11-data-cleaning-env.hf.space").sync() as env:
     tasks = env.tasks()
 
-    # Start episode
     obs = env.reset(task_name="missing_value_imputation", seed=42)
     print(f"Rows: {obs.total_rows} | Issues: {obs.issues_remaining}")
 
-    # Take a step
     action = DataCleaningAction(
         action_type="impute",
         column="age",
@@ -204,7 +218,6 @@ with DataCleaningEnv("http://localhost:8000").sync() as env:
     obs, reward, done, info = env.step(action)
     print(f"Reward: {reward} | Progress: {obs.progress_pct:.0%}")
 
-    # Get grader score at any point
     result = env.grader()
     print(f"Score: {result.score:.4f}")
 ```
@@ -217,7 +230,7 @@ from client import DataCleaningEnv
 from models import DataCleaningAction
 
 async def main():
-    async with DataCleaningEnv("http://localhost:8000") as env:
+    async with DataCleaningEnv("https://revanth11-data-cleaning-env.hf.space") as env:
         obs = await env.reset(task_name="type_errors_and_outliers")
         action = DataCleaningAction(
             action_type="cast", column="price", params={"dtype": "float"}
@@ -230,24 +243,31 @@ asyncio.run(main())
 ### Direct HTTP
 
 ```bash
+# Health check
+curl https://revanth11-data-cleaning-env.hf.space/health
+
 # Reset
-curl -X POST http://localhost:8000/reset \
+curl -X POST https://revanth11-data-cleaning-env.hf.space/reset \
      -H "Content-Type: application/json" \
      -d '{"task_name": "missing_value_imputation", "seed": 42}'
 
 # Step
-curl -X POST http://localhost:8000/step \
+curl -X POST https://revanth11-data-cleaning-env.hf.space/step \
      -H "Content-Type: application/json" \
      -d '{"action": {"action_type": "impute", "column": "age", "params": {"strategy": "median"}}}'
 
-# List tasks + action schema
-curl http://localhost:8000/tasks
+# List tasks
+curl https://revanth11-data-cleaning-env.hf.space/tasks
 
 # Grader score
-curl -X POST http://localhost:8000/grader
+curl -X POST https://revanth11-data-cleaning-env.hf.space/grader \
+     -H "Content-Type: application/json" \
+     -d '{"session_id": "default"}'
 
-# Heuristic baseline scores
-curl -X POST http://localhost:8000/baseline
+# Baseline scores
+curl -X POST https://revanth11-data-cleaning-env.hf.space/baseline \
+     -H "Content-Type: application/json" \
+     -d '{"seed": 42}'
 ```
 
 ---
@@ -302,6 +322,8 @@ data-cleaning-env/
 ├── baseline.py            LLM baseline inference script
 ├── openenv.yaml           OpenEnv manifest
 ├── requirements.txt       Pinned dependencies
+├── pyproject.toml         Package metadata
+├── README.md              This file
 └── server/
     ├── app.py             FastAPI server
     └── Dockerfile         Container definition
