@@ -150,7 +150,7 @@ Total episode reward range: `[-1.0, 1.0]` per step.
 ### Local — Uvicorn
 
 ```bash
-git clone https://huggingface.co/spaces/<username>/data-cleaning-env
+git clone https://huggingface.co/spaces/revanth11/data-cleaning-env
 cd data-cleaning-env
 pip install -r requirements.txt
 uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
@@ -173,8 +173,8 @@ curl http://localhost:8000/health
 
 ```bash
 # Pull directly from registry
-docker pull registry.hf.space/<username>-data-cleaning-env:latest
-docker run -d -p 8000:7860 registry.hf.space/<username>-data-cleaning-env:latest
+docker pull registry.hf.space/revanthk11-data-cleaning-env:latest
+docker run -d -p 8000:7860 registry.hf.space/revanthk11-data-cleaning-env:latest
 ```
 
 ---
