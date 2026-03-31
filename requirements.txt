@@ -1,0 +1,16 @@
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+websockets==13.0
+pydantic==2.8.2
+
+# Data
+pandas==2.2.2
+numpy==1.26.4
+
+# HTTP client (used by client.py and baseline.py)
+requests==2.32.3
+openai==1.40.0
+
+# YAML parsing (openenv.yaml)
+pyyaml==6.0.2

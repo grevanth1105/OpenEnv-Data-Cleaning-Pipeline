@@ -1,0 +1,205 @@
+name: data-cleaning-env
+version: "1.0.0"
+description: >
+  An RL environment where AI agents learn to clean real-world datasets.
+  Three tasks of increasing difficulty: missing value imputation (easy),
+  type errors and outlier detection (medium), and schema normalization
+  with deduplication (hard). Agents receive dense partial-progress rewards
+  at every step, not just at episode end.
+
+author: openenv-hackathon
+license: MIT
+tags:
+  - openenv
+  - data-cleaning
+  - real-world
+  - rl-environment
+  - tabular-data
+
+# ---------------------------------------------------------------------------
+# Environment spec
+# ---------------------------------------------------------------------------
+
+environment:
+  type: text
+  interface: http+websocket
+  max_steps:
+    easy:   15
+    medium: 20
+    hard:   25
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+
+tasks:
+  - name: missing_value_imputation
+    difficulty: easy
+    description: >
+      HR employee dataset with deliberate missing values across 5 columns.
+      Agent must identify each column's null pattern and apply the correct
+      imputation strategy (mean/median/mode).
+    max_steps: 15
+    score_range: [0.0, 1.0]
+    passing_threshold: 0.6
+
+  - name: type_errors_and_outliers
+    difficulty: medium
+    description: >
+      E-commerce orders dataset with type errors (prices stored as strings,
+      mixed date formats, invalid ratings) and statistical outliers in
+      numeric columns. Agent must cast, normalize, and clip appropriately.
+    max_steps: 20
+    score_range: [0.0, 1.0]
+    passing_threshold: 0.6
+
+  - name: schema_normalization_dedup
+    difficulty: hard
+    description: >
+      CRM customer dataset with duplicate rows, inconsistent category
+      formats (region/country/status), schema violations (negative ages,
+      negative revenue), and multiple NULL representations. Agent must
+      deduplicate, normalize, and repair schema violations.
+    max_steps: 25
+    score_range: [0.0, 1.0]
+    passing_threshold: 0.6
+
+# ---------------------------------------------------------------------------
+# Action space
+# ---------------------------------------------------------------------------
+
+action_space:
+  type: structured
+  fields:
+    - name: action_type
+      type: string
+      required: true
+      enum:
+        - impute
+        - cast
+        - normalize
+        - clip_outlier
+        - flag_outlier
+        - deduplicate
+        - drop_column
+        - drop_rows
+        - rename
+        - finish
+    - name: column
+      type: string
+      required: false
+      description: Target column name. Null for dataset-wide operations.
+    - name: params
+      type: object
+      required: false
+      description: Operation-specific parameters (strategy, dtype, format, etc.)
+
+# ---------------------------------------------------------------------------
+# Observation space
+# ---------------------------------------------------------------------------
+
+observation_space:
+  type: structured
+  fields:
+    - name: dataset_snapshot
+      type: array
+      description: First 10 rows of the current dataset as JSON records.
+    - name: total_rows
+      type: integer
+    - name: total_columns
+      type: integer
+    - name: column_stats
+      type: array
+      description: Per-column stats — dtype, null_count, null_pct, min, max, mean, outlier_count.
+    - name: issues_detected
+      type: array
+      description: Remaining data quality issues with type, severity, and count.
+    - name: issues_remaining
+      type: integer
+    - name: action_history
+      type: array
+      description: Last 10 actions taken this episode.
+    - name: last_action_result
+      type: string
+    - name: reward
+      type: number
+    - name: cumulative_reward
+      type: number
+    - name: done
+      type: boolean
+    - name: step_count
+      type: integer
+    - name: task_name
+      type: string
+    - name: task_description
+      type: string
+    - name: task_difficulty
+      type: string
+      enum: [easy, medium, hard]
+    - name: progress_pct
+      type: number
+      description: Estimated fraction of issues resolved (0.0–1.0).
+
+# ---------------------------------------------------------------------------
+# Reward
+# ---------------------------------------------------------------------------
+
+reward:
+  type: dense
+  range: [-1.0, 1.0]
+  signals:
+    - name: issue_fixed
+      value: "+0.15 per correctly resolved issue"
+    - name: column_fixed
+      value: "+0.05 when a full column is cleaned"
+    - name: milestone_bonus
+      value: "+0.10 to +0.30 on key milestones (dedup, finish)"
+    - name: destructive_action
+      value: "-0.05 to -0.15 for dropping valid data"
+    - name: repeated_action
+      value: "-0.10 per repeat of same action (escalating)"
+    - name: invalid_action
+      value: "-0.05 for malformed or no-op actions"
+
+# ---------------------------------------------------------------------------
+# Server
+# ---------------------------------------------------------------------------
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  max_concurrent_envs: 100
+  endpoints:
+    - GET  /health
+    - POST /reset
+    - POST /step
+    - GET  /state
+    - GET  /tasks
+    - POST /grader
+    - POST /baseline
+    - WS   /ws
+    - GET  /docs
+
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
+
+deployment:
+  dockerfile: server/Dockerfile
+  hf_space: true
+  hardware: cpu-basic
+
+# ---------------------------------------------------------------------------
+# Baseline
+# ---------------------------------------------------------------------------
+
+baseline:
+  script: baseline.py
+  model: gpt-4o-mini
+  seed: 42
+  scores:
+    missing_value_imputation:   1.0000
+    type_errors_and_outliers:   0.9260
+    schema_normalization_dedup: 0.8054
+    mean:                       0.9105
