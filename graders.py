@@ -18,14 +18,12 @@ import pandas as pd
 
 def grade_task1(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
     """
-    Score: each of 5 columns worth 0.20.
-    Full credit  → nulls gone and fill value within 10% of expected.
-    Half credit  → nulls gone but fill value far from expected.
+    Score: 4 columns × 0.25 each = 1.0
+    Full credit  → nulls gone, fill value within tolerance.
     Zero credit  → nulls remain.
     """
     scores = {}
-    weights = {"age": 0.20, "salary": 0.20, "department": 0.20,
-               "years_exp": 0.20, "is_manager": 0.20}
+    weights = {"age": 0.25, "fare": 0.25, "embarked": 0.25, "years_aboard": 0.25}
 
     for col, weight in weights.items():
         if col not in df.columns:
@@ -44,16 +42,15 @@ def grade_task1(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
         if strategy in ("median", "mean"):
             try:
                 actual_mean = float(df[col].mean())
-                # Allow 10% tolerance — strategy verified by proximity to expected
-                tolerance = abs(float(expected)) * 0.10 + 1.0
+                tolerance   = abs(float(expected)) * 0.10 + 1.0
                 scores[col] = weight if abs(actual_mean - float(expected)) <= tolerance * 3 else weight * 0.5
             except Exception:
                 scores[col] = weight * 0.75
         elif strategy == "mode":
             try:
-                actual_mode = str(df[col].mode()[0]).strip()
+                actual_mode  = str(df[col].mode()[0]).strip()
                 expected_str = str(expected).strip()
-                scores[col] = weight if actual_mode == expected_str else weight * 0.5
+                scores[col]  = weight if actual_mode == expected_str else weight * 0.5
             except Exception:
                 scores[col] = weight * 0.75
         else:
@@ -75,21 +72,21 @@ def _infer_numeric_fill(series: pd.Series, strategy: str) -> float:
 def grade_task2(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
     """
     Score breakdown:
-        price cast to float        → 0.15
+        unit_price cast to float   → 0.15
         quantity cast to int       → 0.15
         rating cast to float       → 0.15
         order_date normalized      → 0.10
         discount_pct clipped       → 0.20
-        weight_kg outliers handled → 0.15
+        region casing fixed        → 0.15
         no unnecessary row drops   → 0.10
     """
     scores = {}
 
-    # price → float
-    scores["price"] = 0.0
-    if "price" in df.columns and pd.api.types.is_float_dtype(df["price"]):
-        if df["price"].between(0, 100_000).all():
-            scores["price"] = 0.15
+    # unit_price → float
+    scores["unit_price"] = 0.0
+    if "unit_price" in df.columns and pd.api.types.is_float_dtype(df["unit_price"]):
+        if df["unit_price"].between(0, 1_000_000).all():
+            scores["unit_price"] = 0.15
 
     # quantity → int-like
     scores["quantity"] = 0.0
@@ -97,7 +94,7 @@ def grade_task2(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
         if pd.api.types.is_integer_dtype(df["quantity"]):
             scores["quantity"] = 0.15
         elif pd.api.types.is_float_dtype(df["quantity"]) and df["quantity"].dropna().apply(float.is_integer).all():
-            scores["quantity"] = 0.10  # float but whole numbers
+            scores["quantity"] = 0.10
 
     # rating → float, valid range
     scores["rating"] = 0.0
@@ -110,26 +107,26 @@ def grade_task2(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
     if "order_date" in df.columns:
         try:
             parsed = pd.to_datetime(df["order_date"], errors="coerce")
-            pct_parsed = parsed.notna().mean()
-            scores["order_date"] = round(0.10 * pct_parsed, 4)
+            scores["order_date"] = round(0.10 * parsed.notna().mean(), 4)
         except Exception:
             pass
 
     # discount_pct → clipped to [0, 100]
     scores["discount_pct"] = 0.0
     if "discount_pct" in df.columns and pd.api.types.is_numeric_dtype(df["discount_pct"]):
-        bad = ((df["discount_pct"] < 0) | (df["discount_pct"] > 100)).sum()
+        bad = int(((df["discount_pct"] < 0) | (df["discount_pct"] > 100)).sum())
         scores["discount_pct"] = 0.20 if bad == 0 else round(0.20 * (1 - bad / len(df)), 4)
 
-    # weight_kg → outliers handled (no value > 200kg)
-    scores["weight_kg"] = 0.0
-    if "weight_kg" in df.columns and pd.api.types.is_numeric_dtype(df["weight_kg"]):
-        extreme = (df["weight_kg"] > 200).sum()
-        scores["weight_kg"] = 0.15 if extreme == 0 else round(0.15 * (1 - extreme / len(df)), 4)
+    # region → title case
+    scores["region"] = 0.0
+    if "region" in df.columns:
+        valid_regions = {"North", "South", "East", "West", "Central"}
+        pct_valid = df["region"].dropna().isin(valid_regions).mean()
+        scores["region"] = round(0.15 * pct_valid, 4)
 
-    # Row preservation — penalise dropping >10% of rows
+    # Row preservation
     scores["row_preservation"] = 0.0
-    if len(df) >= 135:  # original was 150, allow 10% drop
+    if len(df) >= 135:
         scores["row_preservation"] = 0.10
     elif len(df) >= 100:
         scores["row_preservation"] = 0.05

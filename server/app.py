@@ -187,9 +187,8 @@ def grader(req: GraderRequest):
 @app.post("/baseline")
 def baseline(req: BaselineRequest):
     """
-    Run a simple heuristic baseline agent on all 3 tasks and return scores.
-    Uses deterministic rule-based actions (no LLM call) for reproducibility.
-    The full LLM baseline is in baseline.py (requires OPENAI_API_KEY).
+    Run a heuristic baseline agent on all 3 tasks and return scores.
+    Deterministic — no LLM call needed. Full LLM baseline is in baseline.py.
     """
     import numpy as np
     import pandas as pd
@@ -203,23 +202,25 @@ def baseline(req: BaselineRequest):
         gt   = data["ground_truth"]
 
         if task_name == "missing_value_imputation":
+            # Fill each column with its ground-truth value
             for col, info in gt.items():
                 if col in df.columns:
                     df[col] = df[col].fillna(info["value"])
 
         elif task_name == "type_errors_and_outliers":
-            df["price"]        = pd.to_numeric(
-                df["price"].astype(str).str.replace(r"[^\d.]", "", regex=True),
+            # Cast unit_price string → float
+            df["unit_price"]   = pd.to_numeric(
+                df["unit_price"].astype(str).str.replace(r"[^\d.]", "", regex=True),
                 errors="coerce",
             )
             df["quantity"]     = pd.to_numeric(df["quantity"], errors="coerce")
             df["discount_pct"] = df["discount_pct"].clip(0, 100)
-            df["weight_kg"]    = df["weight_kg"].clip(upper=200)
             df["rating"]       = pd.to_numeric(
                 df["rating"].astype(str).str.extract(r"(\d+\.?\d*)")[0],
                 errors="coerce",
             ).clip(0, 5)
             df["order_date"]   = pd.to_datetime(df["order_date"], errors="coerce")
+            df["region"]       = df["region"].str.title()
 
         elif task_name == "schema_normalization_dedup":
             df = df.drop_duplicates().reset_index(drop=True)
@@ -232,7 +233,7 @@ def baseline(req: BaselineRequest):
                 if col in df.columns:
                     df[col] = df[col].replace(list(NULL_VARIANTS), np.nan)
 
-        result       = grade(task_name, df, gt)
+        result             = grade(task_name, df, gt)
         results[task_name] = round(result["score"], 4)
 
     mean_score = round(sum(results.values()) / len(results), 4)

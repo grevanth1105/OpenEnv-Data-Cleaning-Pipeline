@@ -22,7 +22,7 @@ receiving dense reward signals at every cleaning action — not just at episode 
 [![HF Space](https://img.shields.io/badge/HuggingFace-Space-yellow)](https://huggingface.co/spaces/revanth11/data-cleaning-env)
 [![GitHub](https://img.shields.io/badge/GitHub-grevanth1105-black?logo=github)](https://github.com/grevanth1105/OpenEnv-Data-Cleaning-Pipeline)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/grevanth1105/OpenEnv-Data-Cleaning-Pipeline/blob/main/training_demo.ipynb)
 ---
 
 ## Why data cleaning?

@@ -551,24 +551,24 @@ if __name__ == "__main__":
         print(f"   Rows: {obs.total_rows} | Columns: {obs.total_columns}")
         print(f"   Issues: {obs.issues_remaining} | Progress: {obs.progress_pct:.0%}")
 
-        # Run 3 sample actions depending on task
+        # Run sample actions per task
         if task == "missing_value_imputation":
             actions = [
-                DataCleaningAction(action_type="impute", column="age",    params={"strategy": "median"}),
-                DataCleaningAction(action_type="impute", column="salary", params={"strategy": "mean"}),
-                DataCleaningAction(action_type="finish", column=None,     params={}),
+                DataCleaningAction(action_type="impute", column="age",          params={"strategy": "median"}),
+                DataCleaningAction(action_type="impute", column="fare",         params={"strategy": "mean"}),
+                DataCleaningAction(action_type="finish", column=None,           params={}),
             ]
         elif task == "type_errors_and_outliers":
             actions = [
-                DataCleaningAction(action_type="cast",         column="price",        params={"dtype": "float"}),
+                DataCleaningAction(action_type="cast",         column="unit_price",   params={"dtype": "float"}),
                 DataCleaningAction(action_type="clip_outlier", column="discount_pct", params={"lower": 0, "upper": 100}),
                 DataCleaningAction(action_type="finish",       column=None,           params={}),
             ]
         else:
             actions = [
-                DataCleaningAction(action_type="deduplicate", column=None,   params={}),
+                DataCleaningAction(action_type="deduplicate", column=None,     params={}),
                 DataCleaningAction(action_type="normalize",   column="status", params={"method": "lowercase"}),
-                DataCleaningAction(action_type="finish",      column=None,   params={}),
+                DataCleaningAction(action_type="finish",      column=None,     params={}),
             ]
 
         for action in actions:

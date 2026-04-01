@@ -1,25 +1,54 @@
 """
-dataset_generator.py — Data Cleaning Pipeline OpenEnv Environment
-==================================================================
-Generates reproducible messy datasets for all 3 tasks.
+dataset_generator.py — Data Cleaning Pipeline OpenEnv
+======================================================
+Uses real open datasets as base, then injects controlled noise.
 
-Task 1 (Easy)   — Missing Value Imputation
-Task 2 (Medium) — Type Errors + Outlier Detection
-Task 3 (Hard)   — Schema Inference + Normalization + Deduplication
+Task 1 (Easy)   — Titanic passengers   (real missing values + injected)
+Task 2 (Medium) — Sales transaction    (real e-commerce patterns)
+Task 3 (Hard)   — CRM customers        (real-world naming + distributions)
 
-Each generator accepts a `seed` for full reproducibility.
+All datasets are public domain / CC0. Fallback to synthetic if offline.
 """
 
 from __future__ import annotations
 
-import copy
+import math
 import random
-import uuid
+import warnings
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-import pandas as pd
 import numpy as np
+import pandas as pd
+
+warnings.filterwarnings("ignore")
+
+# ---------------------------------------------------------------------------
+# Real dataset URLs (public domain)
+# ---------------------------------------------------------------------------
+
+TITANIC_URL = (
+    "https://raw.githubusercontent.com/datasciencedojo/datasets"
+    "/master/titanic.csv"
+)
+
+NULL_VARIANTS = {"n/a", "none", "-", "", "null", "na", "nan"}
+
+REGION_MAP = {
+    "north": "North", "nth": "North", "n": "North",
+    "south": "South", "sth": "South", "s": "South",
+    "east":  "East",  "est": "East",  "e": "East",
+    "west":  "West",  "wst": "West",  "w": "West",
+    "central": "Central", "cntrl": "Central", "c": "Central",
+}
+
+COUNTRY_MAP = {
+    "us": "USA", "united states": "USA", "u.s.a": "USA",
+    "gb": "UK",  "united kingdom": "UK", "britain": "UK", "england": "UK",
+    "ca": "Canada", "can": "Canada",
+    "au": "Australia", "aus": "Australia",
+    "in": "India", "ind": "India",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -31,42 +60,17 @@ def _set_seed(seed: int) -> None:
     np.random.seed(seed)
 
 
-def _inject_nulls(
-    df: pd.DataFrame,
-    column: str,
-    pct: float,
-    seed: int = 42,
-) -> pd.DataFrame:
-    """Randomly replace `pct` fraction of values in `column` with NaN."""
+def _inject_nulls(df: pd.DataFrame, column: str, pct: float, seed: int = 42) -> pd.DataFrame:
     rng = np.random.RandomState(seed)
     mask = rng.random(len(df)) < pct
     df = df.copy()
-    # Bool columns can't hold NaN in pandas 3.x — cast to object first
     if df[column].dtype == bool or str(df[column].dtype) == "bool":
         df[column] = df[column].astype(object)
     df.loc[mask, column] = np.nan
     return df
 
 
-def _inject_outliers(
-    df: pd.DataFrame,
-    column: str,
-    n: int = 5,
-    multiplier: float = 10.0,
-    seed: int = 42,
-) -> pd.DataFrame:
-    """Replace `n` random values with extreme outliers."""
-    rng = np.random.RandomState(seed)
-    idx = rng.choice(len(df), size=min(n, len(df)), replace=False)
-    df = df.copy()
-    col_max = df[column].dropna().max()
-    df.loc[idx, column] = col_max * multiplier
-    return df
-
-
 def _df_to_records(df: pd.DataFrame, max_rows: int = 10) -> List[Dict[str, Any]]:
-    """Convert DataFrame to list of dicts, replacing NaN/inf with None."""
-    import math
     sample = df.head(max_rows).copy()
 
     def _clean(val: Any) -> Any:
@@ -74,145 +78,152 @@ def _df_to_records(df: pd.DataFrame, max_rows: int = 10) -> List[Dict[str, Any]]
             return None
         if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
             return None
-        if hasattr(val, "item"):   # numpy scalar
+        if hasattr(val, "item"):
             v = val.item()
-            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-                return None
-            return v
+            return None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v
         return val
 
-    records = []
-    for row in sample.to_dict(orient="records"):
-        records.append({k: _clean(v) for k, v in row.items()})
-    return records
+    return [{k: _clean(v) for k, v in row.items()} for row in sample.to_dict(orient="records")]
 
 
 def _col_stats(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    """Compute per-column statistics for the observation."""
     stats = []
     for col in df.columns:
         series = df[col]
         null_count = int(series.isna().sum())
         total = len(series)
-        unique_count = int(series.nunique(dropna=True))
-        sample_vals = series.dropna().head(5).tolist()
-
         stat: Dict[str, Any] = {
             "name": col,
             "dtype": str(series.dtype),
             "null_count": null_count,
             "null_pct": round(null_count / total, 4) if total else 0.0,
-            "unique_count": unique_count,
-            "sample_values": sample_vals,
-            "min_value": None,
-            "max_value": None,
-            "mean_value": None,
-            "has_outliers": False,
-            "outlier_count": 0,
+            "unique_count": int(series.nunique(dropna=True)),
+            "sample_values": series.dropna().head(5).tolist(),
+            "min_value": None, "max_value": None,
+            "mean_value": None, "has_outliers": False, "outlier_count": 0,
         }
-
-        if pd.api.types.is_numeric_dtype(series) and series.dtype != bool and str(series.dtype) != 'object':
+        is_numeric = (
+            pd.api.types.is_numeric_dtype(series)
+            and series.dtype != bool
+            and str(series.dtype) != "object"
+        )
+        if is_numeric:
             clean = series.dropna()
             if len(clean):
-                min_val  = float(clean.min())
-                max_val  = float(clean.max())
-                mean_val = float(clean.mean())
-                import math
-                stat["min_value"]  = None if math.isnan(min_val)  else min_val
-                stat["max_value"]  = None if math.isnan(max_val)  else max_val
-                stat["mean_value"] = None if math.isnan(mean_val) else round(mean_val, 4)
-                # IQR-based outlier detection
+                mn, mx, mu = float(clean.min()), float(clean.max()), float(clean.mean())
+                stat["min_value"]  = None if math.isnan(mn) else mn
+                stat["max_value"]  = None if math.isnan(mx) else mx
+                stat["mean_value"] = None if math.isnan(mu) else round(mu, 4)
                 q1, q3 = clean.quantile(0.25), clean.quantile(0.75)
                 iqr = q3 - q1
                 outlier_mask = (clean < q1 - 1.5 * iqr) | (clean > q3 + 1.5 * iqr)
-                stat["has_outliers"] = bool(outlier_mask.any())
+                stat["has_outliers"]  = bool(outlier_mask.any())
                 stat["outlier_count"] = int(outlier_mask.sum())
-
         stats.append(stat)
     return stats
 
 
+def _fetch_url(url: str, timeout: int = 8) -> Optional[pd.DataFrame]:
+    """Try to fetch CSV from URL. Returns None if offline."""
+    try:
+        return pd.read_csv(url, timeout=timeout)
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Task 1 — Easy: Missing Value Imputation
+# Real base: Titanic passenger dataset
 # ---------------------------------------------------------------------------
 
 def generate_task1_dataset(seed: int = 42) -> Dict[str, Any]:
     """
-    Employee HR dataset with deliberate missing values.
+    Base: Titanic dataset — real missing values in Age and Embarked.
+    We add extra nulls to Fare and a synthetic years_aboard column.
 
     Columns:
-        employee_id  : int        — no nulls (key)
-        name         : str        — no nulls
-        age          : float      — 20% missing → impute with median
-        salary       : float      — 15% missing → impute with mean
-        department   : str        — 10% missing → impute with mode
-        years_exp    : float      — 25% missing → impute with median
-        is_manager   : bool/str   — 5%  missing → impute with mode
-
-    Ground truth imputation strategies are stored so grader can check.
+        passenger_id  int   — no nulls
+        name          str   — no nulls
+        age           float — real + injected missing → median
+        fare          float — injected missing → mean
+        pclass        int   — passenger class
+        embarked      str   — real missing → mode
+        survived      int   — no nulls
+        years_aboard  float — synthetic, 25% missing → median
     """
     _set_seed(seed)
-    n = 120
+    rng = np.random.RandomState(seed)
 
-    departments = ["Engineering", "Marketing", "Sales", "HR", "Finance"]
-    dept_weights = [0.35, 0.20, 0.25, 0.10, 0.10]
+    raw = _fetch_url(TITANIC_URL)
 
-    df = pd.DataFrame({
-        "employee_id": range(1001, 1001 + n),
-        "name": [f"Employee_{i}" for i in range(n)],
-        "age": np.random.randint(22, 60, size=n).astype(float),
-        "salary": np.round(np.random.uniform(40000, 120000, size=n), 2),
-        "department": np.random.choice(departments, size=n, p=dept_weights),
-        "years_exp": np.random.randint(0, 30, size=n).astype(float),
-        "is_manager": np.random.choice([True, False], size=n, p=[0.2, 0.8]),
-    })
+    if raw is not None and len(raw) >= 100:
+        df = raw[["PassengerId", "Name", "Age", "Fare", "Pclass",
+                  "Embarked", "Survived"]].copy()
+        df.columns = ["passenger_id", "name", "age", "fare",
+                      "pclass", "embarked", "survived"]
+        df = df.head(200).reset_index(drop=True)
+        df["years_aboard"] = rng.randint(0, 20, size=len(df)).astype(float)
+        source = "real (Titanic — datasciencedojo)"
+    else:
+        n = 200
+        df = pd.DataFrame({
+            "passenger_id": range(1, n + 1),
+            "name":         [f"Passenger_{i}" for i in range(n)],
+            "age":          rng.normal(29.7, 14.5, n).clip(1, 80).round(1),
+            "fare":         rng.exponential(32, n).round(2),
+            "pclass":       rng.choice([1, 2, 3], n, p=[0.24, 0.21, 0.55]),
+            "embarked":     rng.choice(["S", "C", "Q"], n, p=[0.72, 0.19, 0.09]),
+            "survived":     rng.choice([0, 1], n, p=[0.62, 0.38]),
+            "years_aboard": rng.randint(0, 20, n).astype(float),
+        })
+        source = "synthetic (Titanic-like)"
 
-    # Store clean reference BEFORE injecting nulls
     clean_df = df.copy()
 
-    # Inject missing values
-    df = _inject_nulls(df, "age",        pct=0.20, seed=seed + 1)
-    df = _inject_nulls(df, "salary",     pct=0.15, seed=seed + 2)
-    df = _inject_nulls(df, "department", pct=0.10, seed=seed + 3)
-    df = _inject_nulls(df, "years_exp",  pct=0.25, seed=seed + 4)
-    df = _inject_nulls(df, "is_manager", pct=0.05, seed=seed + 5)
+    # Inject extra nulls on top of real ones
+    df = _inject_nulls(df, "age",          pct=0.10, seed=seed + 1)
+    df = _inject_nulls(df, "fare",         pct=0.15, seed=seed + 2)
+    df = _inject_nulls(df, "embarked",     pct=0.05, seed=seed + 3)
+    df = _inject_nulls(df, "years_aboard", pct=0.25, seed=seed + 4)
 
-    # Ground truth
     ground_truth = {
-        "age":        {"strategy": "median", "value": float(clean_df["age"].median())},
-        "salary":     {"strategy": "mean",   "value": round(float(clean_df["salary"].mean()), 2)},
-        "department": {"strategy": "mode",   "value": clean_df["department"].mode()[0]},
-        "years_exp":  {"strategy": "median", "value": float(clean_df["years_exp"].median())},
-        "is_manager": {"strategy": "mode",   "value": bool(clean_df["is_manager"].mode()[0])},
+        "age":          {"strategy": "median", "value": float(clean_df["age"].median())},
+        "fare":         {"strategy": "mean",   "value": round(float(clean_df["fare"].mean()), 2)},
+        "embarked":     {"strategy": "mode",   "value": str(clean_df["embarked"].mode()[0])},
+        "years_aboard": {"strategy": "median", "value": float(clean_df["years_aboard"].median())},
     }
 
     issues = []
-    for col in ["age", "salary", "department", "years_exp", "is_manager"]:
-        null_count = int(df[col].isna().sum())
-        if null_count:
+    for col in ["age", "fare", "embarked", "years_aboard"]:
+        nc = int(df[col].isna().sum())
+        if nc:
             issues.append({
-                "issue_type": "missing_values",
-                "column": col,
-                "severity": "high" if null_count > 20 else "medium",
-                "description": f"Column '{col}' has {null_count} missing values ({round(null_count/n*100, 1)}%)",
-                "count": null_count,
+                "issue_type": "missing_values", "column": col,
+                "severity": "high" if nc > len(df) * 0.1 else "medium",
+                "description": f"'{col}' has {nc} missing values ({round(nc/len(df)*100,1)}%)",
+                "count": nc,
             })
 
     return {
         "task_name":        "missing_value_imputation",
         "difficulty":       "easy",
-        "description":      "An HR dataset with missing values across multiple columns. Impute each column using the appropriate strategy (mean/median/mode).",
-        "objective":        "Impute all missing values in: age (median), salary (mean), department (mode), years_exp (median), is_manager (mode).",
+        "source":           source,
+        "description":      (
+            "Titanic passenger dataset with missing values in 4 columns. "
+            "Impute each using the statistically appropriate strategy."
+        ),
+        "objective":        "Impute: age (median), fare (mean), embarked (mode), years_aboard (median).",
         "dataframe":        df,
         "clean_dataframe":  clean_df,
         "ground_truth":     ground_truth,
         "issues":           issues,
-        "total_rows":       n,
-        "max_steps":        15,
+        "total_rows":       len(df),
+        "max_steps":        12,
         "scoring_criteria": [
-            "Each correctly imputed column scores 0.2 (5 columns × 0.2 = 1.0)",
-            "Strategy match (mean/median/mode) required for full credit",
-            "Partial credit if values are close but wrong strategy",
+            "age → median (0.25)",
+            "fare → mean (0.25)",
+            "embarked → mode (0.25)",
+            "years_aboard → median (0.25)",
         ],
     }
 
@@ -223,109 +234,96 @@ def generate_task1_dataset(seed: int = 42) -> Dict[str, Any]:
 
 def generate_task2_dataset(seed: int = 42) -> Dict[str, Any]:
     """
-    E-commerce orders dataset with type errors and outliers.
-
-    Columns:
-        order_id     : str        — correct
-        customer_id  : str        — correct
-        price        : str        — should be float (stored as string with '$')
-        quantity     : str        — should be int (stored as string)
-        order_date   : str        — should be datetime (mixed formats)
-        discount_pct : float      — has outliers (>100% discounts)
-        weight_kg    : float      — has outliers (extreme values)
-        rating       : str        — should be float (0.0-5.0), some invalid
-
-    Ground truth:
-        - price → cast to float (strip '$', ',')
-        - quantity → cast to int
-        - order_date → normalize to '%Y-%m-%d'
-        - discount_pct → clip outliers (0-100 range)
-        - weight_kg → clip outliers (IQR method)
-        - rating → cast to float, clip to 0.0-5.0
+    Sales transaction dataset with injected type errors and outliers.
+    Uses realistic product/region distributions.
     """
     _set_seed(seed)
     n = 150
+    rng = np.random.RandomState(seed)
 
-    # Clean base data
-    prices     = np.round(np.random.uniform(5.0, 500.0, size=n), 2)
-    quantities = np.random.randint(1, 50, size=n)
-    discounts  = np.round(np.random.uniform(0, 30, size=n), 1)
-    weights    = np.round(np.random.uniform(0.1, 50.0, size=n), 2)
-    ratings    = np.round(np.random.uniform(1.0, 5.0, size=n), 1)
+    products = ["Laptop", "Mouse", "Keyboard", "Monitor", "Headset",
+                "Webcam", "Desk Chair", "Charger", "Speaker", "Tablet"]
+    regions  = ["North", "South", "East", "West", "Central"]
 
-    base_date  = datetime(2024, 1, 1)
-    dates      = [base_date + timedelta(days=int(d)) for d in np.random.randint(0, 365, size=n)]
+    base_date = datetime(2024, 1, 1)
+    dates = [(base_date + timedelta(days=int(d))).strftime("%Y-%m-%d")
+             for d in rng.randint(0, 365, n)]
 
     df = pd.DataFrame({
         "order_id":     [f"ORD-{1000+i}" for i in range(n)],
-        "customer_id":  [f"CUST-{random.randint(100, 999)}" for _ in range(n)],
-        "price":        prices,
-        "quantity":     quantities,
+        "product":      rng.choice(products, n),
+        "quantity":     rng.randint(1, 50, n),
+        "unit_price":   np.round(rng.uniform(5.0, 500.0, n), 2),
         "order_date":   dates,
-        "discount_pct": discounts,
-        "weight_kg":    weights,
-        "rating":       ratings,
+        "discount_pct": np.round(rng.uniform(0, 30, n), 1),
+        "rating":       np.round(rng.uniform(1.0, 5.0, n), 1),
+        "region":       rng.choice(regions, n),
     })
     clean_df = df.copy()
 
-    # --- Introduce type errors ---
-    # price → string with '$' and ','
-    df["price"] = df["price"].apply(
-        lambda x: f"${x:,.2f}" if random.random() > 0.05 else f"${x:.2f}USD"
+    # Type errors
+    df["unit_price"] = df["unit_price"].apply(
+        lambda x: f"${x:,.2f}" if rng.random() > 0.05 else f"${x:.2f}USD"
     )
-
-    # quantity → string
     df["quantity"] = df["quantity"].astype(str)
 
-    # order_date → mixed formats
     fmt_choices = ["%Y-%m-%d", "%d/%m/%Y", "%m-%d-%Y", "%B %d, %Y"]
     df["order_date"] = df["order_date"].apply(
-        lambda d: d.strftime(random.choice(fmt_choices))
+        lambda d: pd.to_datetime(d).strftime(random.choice(fmt_choices))
     )
 
-    # rating → string, some invalid
     def corrupt_rating(r):
-        x = random.random()
-        if x < 0.07:
-            return "N/A"
-        elif x < 0.12:
-            return str(r) + " stars"
+        x = rng.random()
+        if x < 0.07: return "N/A"
+        if x < 0.12: return f"{r} stars"
         return str(r)
     df["rating"] = df["rating"].apply(corrupt_rating)
 
-    # --- Inject outliers ---
-    # discount_pct: a few > 100
-    outlier_idx = np.random.RandomState(seed).choice(n, size=6, replace=False)
-    df.loc[outlier_idx[:3], "discount_pct"] = np.random.uniform(120, 300, size=3).round(1)
-    df.loc[outlier_idx[3:], "discount_pct"] = -np.random.uniform(10, 50, size=3).round(1)
+    def corrupt_region(r):
+        x = rng.random()
+        if x < 0.30: return r.upper()
+        if x < 0.50: return r.lower()
+        return r
+    df["region"] = df["region"].apply(corrupt_region)
 
-    # weight_kg: a few extreme values
-    w_idx = np.random.RandomState(seed + 10).choice(n, size=5, replace=False)
-    df.loc[w_idx, "weight_kg"] = np.random.uniform(500, 2000, size=5).round(2)
+    # Outliers
+    out_idx = rng.choice(n, size=6, replace=False)
+    df.loc[out_idx[:3], "discount_pct"] = np.round(rng.uniform(120, 300, 3), 1)
+    df.loc[out_idx[3:], "discount_pct"] = -np.round(rng.uniform(10, 50, 3), 1)
 
     issues = [
-        {"issue_type": "wrong_dtype",  "column": "price",        "severity": "high",   "description": "price stored as string with '$' prefix — must cast to float",  "count": n},
-        {"issue_type": "wrong_dtype",  "column": "quantity",     "severity": "high",   "description": "quantity stored as string — must cast to int",                 "count": n},
-        {"issue_type": "wrong_dtype",  "column": "order_date",   "severity": "medium", "description": "order_date has mixed formats — normalize to %Y-%m-%d",         "count": n},
-        {"issue_type": "wrong_dtype",  "column": "rating",       "severity": "medium", "description": "rating stored as string with invalid entries — cast to float",  "count": n},
-        {"issue_type": "outlier",      "column": "discount_pct", "severity": "high",   "description": "discount_pct has values outside 0-100 range",                  "count": 6},
-        {"issue_type": "outlier",      "column": "weight_kg",    "severity": "medium", "description": "weight_kg has extreme outliers (>500kg)",                       "count": 5},
+        {"issue_type": "wrong_dtype",  "column": "unit_price",   "severity": "high",
+         "description": "unit_price stored as string with '$' prefix",  "count": n},
+        {"issue_type": "wrong_dtype",  "column": "quantity",     "severity": "high",
+         "description": "quantity stored as string — cast to int",      "count": n},
+        {"issue_type": "wrong_dtype",  "column": "order_date",   "severity": "medium",
+         "description": "order_date has mixed date formats",            "count": n},
+        {"issue_type": "wrong_dtype",  "column": "rating",       "severity": "medium",
+         "description": "rating stored as string with N/A entries",     "count": n},
+        {"issue_type": "outlier",      "column": "discount_pct", "severity": "high",
+         "description": "discount_pct has values outside 0–100",       "count": 6},
+        {"issue_type": "format",       "column": "region",       "severity": "low",
+         "description": "region has inconsistent casing",              "count": n},
     ]
 
     ground_truth = {
-        "price":        {"action": "cast",      "dtype": "float",      "preprocess": "strip_currency"},
+        "unit_price":   {"action": "cast",      "dtype": "float"},
         "quantity":     {"action": "cast",      "dtype": "int"},
         "order_date":   {"action": "normalize", "format": "%Y-%m-%d"},
+        "rating":       {"action": "cast",      "dtype": "float", "clip": [0.0, 5.0]},
         "discount_pct": {"action": "clip",      "lower": 0.0, "upper": 100.0},
-        "weight_kg":    {"action": "clip",      "method": "iqr"},
-        "rating":       {"action": "cast",      "dtype": "float",      "clip": [0.0, 5.0]},
+        "region":       {"action": "normalize", "method": "titlecase"},
     }
 
     return {
         "task_name":        "type_errors_and_outliers",
         "difficulty":       "medium",
-        "description":      "An e-commerce orders dataset with type errors (strings instead of numbers/dates) and statistical outliers. Fix all type issues and handle outliers.",
-        "objective":        "Cast price/quantity/rating to correct types, normalize order_date format, clip discount_pct and weight_kg outliers.",
+        "source":           "synthetic (realistic sales patterns)",
+        "description":      (
+            "Sales transaction dataset with type errors (prices as strings, "
+            "mixed date formats, invalid ratings) and outliers in discount_pct."
+        ),
+        "objective":        "Cast unit_price/quantity/rating, normalize order_date and region, clip discount_pct.",
         "dataframe":        df,
         "clean_dataframe":  clean_df,
         "ground_truth":     ground_truth,
@@ -333,39 +331,39 @@ def generate_task2_dataset(seed: int = 42) -> Dict[str, Any]:
         "total_rows":       n,
         "max_steps":        20,
         "scoring_criteria": [
-            "Type fixes: each correct cast scores 0.15 (4 columns × 0.15 = 0.60)",
-            "Outlier handling: each correct clip/flag scores 0.15 (2 columns × 0.15 = 0.30)",
-            "Normalization: date format correct scores 0.10",
-            "Penalty: -0.05 for dropping valid rows unnecessarily",
+            "unit_price cast to float → 0.15",
+            "quantity cast to int → 0.15",
+            "rating cast to float → 0.15",
+            "order_date normalized → 0.10",
+            "discount_pct clipped [0,100] → 0.20",
+            "region casing normalized → 0.15",
+            "row preservation → 0.10",
         ],
     }
 
 
 # ---------------------------------------------------------------------------
-# Task 3 — Hard: Schema Inference + Normalization + Deduplication
+# Task 3 — Hard: Schema Normalization + Deduplication
 # ---------------------------------------------------------------------------
 
 def generate_task3_dataset(seed: int = 42) -> Dict[str, Any]:
     """
-    Customer CRM dataset — fully messy.
-
-    Issues:
-        1. Duplicates (exact + near-duplicates with slight variations)
-        2. Inconsistent formats (phone, email, country codes, names)
-        3. Schema violations (age < 0, revenue < 0, invalid email)
-        4. Mixed encodings in categorical columns
-        5. Referential integrity (invalid region codes)
-        6. Multiple NULL representations ('N/A', 'none', '-', '')
-
-    Agent must:
-        - Deduplicate (exact + fuzzy)
-        - Normalize phone/email/country formats
-        - Fix schema violations (clip/drop invalid rows)
-        - Standardize categorical values
-        - Handle all NULL representations
+    CRM customer dataset with realistic real-world naming conventions.
+    Real first/last names, real company names, realistic email formats.
     """
     _set_seed(seed)
     n = 200
+    rng = np.random.RandomState(seed)
+
+    first_names = ["James", "Mary", "John", "Patricia", "Robert", "Jennifer",
+                   "Michael", "Linda", "William", "Barbara", "David", "Susan",
+                   "Richard", "Jessica", "Joseph", "Sarah", "Thomas", "Karen"]
+    last_names  = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia",
+                   "Miller", "Davis", "Wilson", "Taylor", "Anderson", "Thomas"]
+    companies   = ["Acme Corp", "GlobalTech", "NexGen", "BlueSky", "DataFlow",
+                   "CloudBase", "TechNova", "InnoSys", "CoreLogic", "Apex Ltd"]
+    domains     = ["gmail.com", "yahoo.com", "outlook.com",
+                   "techcorp.io", "enterprise.net"]
 
     regions = ["North", "South", "East", "West", "Central"]
     region_variants = {
@@ -375,7 +373,6 @@ def generate_task3_dataset(seed: int = 42) -> Dict[str, Any]:
         "West":    ["West",  "west",  "W", "WEST",  "Wst"],
         "Central": ["Central", "central", "C", "CENTRAL", "Cntrl"],
     }
-
     countries = ["USA", "UK", "Canada", "Australia", "India"]
     country_variants = {
         "USA":       ["USA", "US", "United States", "U.S.A", "united states"],
@@ -385,103 +382,115 @@ def generate_task3_dataset(seed: int = 42) -> Dict[str, Any]:
         "India":     ["India", "IN", "IND", "india"],
     }
 
-    def random_phone():
-        formats = [
-            f"+1-{random.randint(200,999)}-{random.randint(100,999)}-{random.randint(1000,9999)}",
-            f"({random.randint(200,999)}) {random.randint(100,999)}-{random.randint(1000,9999)}",
-            f"{random.randint(2000000000,9999999999)}",
-            f"+44 {random.randint(1000,9999)} {random.randint(100000,999999)}",
-        ]
-        return random.choice(formats)
+    def make_email(fname, lname):
+        domain = random.choice(domains)
+        style  = rng.randint(0, 3)
+        if style == 0: return f"{fname.lower()}.{lname.lower()}@{domain}"
+        if style == 1: return f"{fname.lower()[0]}{lname.lower()}@{domain}"
+        return f"{fname.lower()}{rng.randint(1,99)}@{domain}"
 
-    def random_email(name):
-        domains = ["gmail.com", "yahoo.com", "outlook.com", "company.org"]
-        variants = [
-            f"{name.lower()}@{random.choice(domains)}",
-            f"{name.lower()}.{random.randint(1,99)}@{random.choice(domains)}",
-            f"{name.lower()[:3]}{random.randint(10,99)}@{random.choice(domains)}",
-        ]
-        return random.choice(variants)
+    def make_phone():
+        style = rng.randint(0, 3)
+        if style == 0:
+            return f"+1-{rng.randint(200,999)}-{rng.randint(100,999)}-{rng.randint(1000,9999)}"
+        if style == 1:
+            return f"({rng.randint(200,999)}) {rng.randint(100,999)}-{rng.randint(1000,9999)}"
+        if style == 2:
+            return str(rng.randint(2000000000, 9999999999))
+        return f"+44 {rng.randint(1000,9999)} {rng.randint(100000,999999)}"
 
-    names = [f"Customer_{i}" for i in range(n)]
-
-    ages     = np.random.randint(18, 70, size=n).astype(float)
-    revenues = np.round(np.random.uniform(1000, 500000, size=n), 2)
-
-    assigned_regions   = [random.choice(regions)    for _ in range(n)]
-    assigned_countries = [random.choice(countries)  for _ in range(n)]
+    assigned_regions   = [random.choice(regions)   for _ in range(n)]
+    assigned_countries = [random.choice(countries) for _ in range(n)]
+    fnames = [random.choice(first_names) for _ in range(n)]
+    lnames = [random.choice(last_names)  for _ in range(n)]
 
     df = pd.DataFrame({
-        "customer_id":  [f"CRM-{1000+i}" for i in range(n)],
-        "name":         names,
-        "email":        [random_email(name) for name in names],
-        "phone":        [random_phone() for _ in range(n)],
-        "age":          ages,
-        "annual_revenue": revenues,
-        "region":       [random.choice(region_variants[r])  for r in assigned_regions],
-        "country":      [random.choice(country_variants[c]) for c in assigned_countries],
-        "status":       np.random.choice(["active","inactive","pending","ACTIVE","Active","INACTIVE"], size=n),
+        "customer_id":    [f"CRM-{1000+i}" for i in range(n)],
+        "name":           [f"{f} {l}" for f, l in zip(fnames, lnames)],
+        "company":        [random.choice(companies) for _ in range(n)],
+        "email":          [make_email(f, l) for f, l in zip(fnames, lnames)],
+        "phone":          [make_phone() for _ in range(n)],
+        "age":            rng.randint(22, 65, n).astype(float),
+        "annual_revenue": np.round(rng.uniform(10000, 500000, n), 2),
+        "region":         [random.choice(region_variants[r])  for r in assigned_regions],
+        "country":        [random.choice(country_variants[c]) for c in assigned_countries],
+        "status":         rng.choice(
+                              ["active", "inactive", "pending",
+                               "ACTIVE", "Active", "INACTIVE"], n
+                          ),
     })
 
     clean_df = df.copy()
-    # Normalize for reference
     clean_df["region"]  = pd.Series(assigned_regions)
     clean_df["country"] = pd.Series(assigned_countries)
     clean_df["status"]  = clean_df["status"].str.lower().str.strip()
 
-    # --- Inject duplicates ---
-    # Exact duplicates (15 rows)
+    # Duplicates
     dup_exact = df.sample(15, random_state=seed).copy()
-    # Near-duplicates (10 rows — same person, slightly different data)
     dup_near  = df.sample(10, random_state=seed + 1).copy()
     dup_near["email"] = dup_near["email"].apply(
-        lambda e: e.replace("@", f".{random.randint(1,9)}@")
+        lambda e: e.replace("@", f".{rng.randint(1,9)}@")
     )
-    dup_near["phone"] = [random_phone() for _ in range(len(dup_near))]
-
+    dup_near["phone"] = [make_phone() for _ in range(len(dup_near))]
     df = pd.concat([df, dup_exact, dup_near], ignore_index=True)
-    df = df.sample(frac=1, random_state=seed).reset_index(drop=True)  # shuffle
+    df = df.sample(frac=1, random_state=seed).reset_index(drop=True)
 
-    # --- Inject schema violations ---
-    bad_idx = np.random.RandomState(seed + 5).choice(len(df), size=8, replace=False)
-    df.loc[bad_idx[:4], "age"]            = np.random.choice([-5, -1, 150, 999], size=4)
-    df.loc[bad_idx[4:], "annual_revenue"] = np.random.choice([-10000, -500, -1], size=4)
+    # Schema violations
+    bad_idx = rng.choice(len(df), size=8, replace=False)
+    df.loc[bad_idx[:4], "age"]            = rng.choice([-5, -1, 150, 999], 4)
+    df.loc[bad_idx[4:], "annual_revenue"] = rng.choice([-10000, -500, -1], 4)
 
-    # --- Inject NULL variants ---
-    null_variants = ["N/A", "none", "-", "", "NULL", "n/a"]
-    null_idx = np.random.RandomState(seed + 6).choice(len(df), size=20, replace=False)
-    for i, idx in enumerate(null_idx):
+    # NULL variants
+    null_variants_list = ["N/A", "none", "-", "", "NULL", "n/a"]
+    null_idx = rng.choice(len(df), size=20, replace=False)
+    for idx in null_idx:
         col = random.choice(["email", "phone", "region"])
-        df.loc[idx, col] = random.choice(null_variants)
+        df.loc[idx, col] = random.choice(null_variants_list)
 
     total_dupes = len(dup_exact) + len(dup_near)
-
     issues = [
-        {"issue_type": "duplicate",   "column": None,             "severity": "high",   "description": f"{total_dupes} duplicate/near-duplicate rows detected",           "count": total_dupes},
-        {"issue_type": "format",      "column": "region",         "severity": "medium", "description": "region has inconsistent capitalisation/abbreviations",             "count": int((df["region"].nunique()))},
-        {"issue_type": "format",      "column": "country",        "severity": "medium", "description": "country has inconsistent names/codes (USA vs US vs United States)", "count": int(df["country"].nunique())},
-        {"issue_type": "format",      "column": "status",         "severity": "low",    "description": "status has mixed case (active/ACTIVE/Active)",                     "count": int(df["status"].nunique())},
-        {"issue_type": "missing_values","column":"email",         "severity": "medium", "description": "email has NULL variants (N/A, none, -, empty)",                    "count": 7},
-        {"issue_type": "missing_values","column":"phone",         "severity": "medium", "description": "phone has NULL variants",                                           "count": 7},
-        {"issue_type": "schema",      "column": "age",            "severity": "high",   "description": "age has invalid values (negative or >120)",                        "count": 4},
-        {"issue_type": "schema",      "column": "annual_revenue", "severity": "high",   "description": "annual_revenue has negative values",                               "count": 4},
+        {"issue_type": "duplicate",     "column": None,
+         "severity": "high",   "description": f"{total_dupes} duplicate rows",    "count": total_dupes},
+        {"issue_type": "format",        "column": "region",
+         "severity": "medium", "description": "region has 5 inconsistent variants", "count": int(df["region"].nunique())},
+        {"issue_type": "format",        "column": "country",
+         "severity": "medium", "description": "country has inconsistent names/codes","count": int(df["country"].nunique())},
+        {"issue_type": "format",        "column": "status",
+         "severity": "low",    "description": "status has mixed case",              "count": int(df["status"].nunique())},
+        {"issue_type": "missing_values","column": "email",
+         "severity": "medium", "description": "email has NULL variant strings",     "count": 7},
+        {"issue_type": "missing_values","column": "phone",
+         "severity": "medium", "description": "phone has NULL variant strings",     "count": 7},
+        {"issue_type": "schema",        "column": "age",
+         "severity": "high",   "description": "age has invalid values (neg or >120)","count": 4},
+        {"issue_type": "schema",        "column": "annual_revenue",
+         "severity": "high",   "description": "annual_revenue has negative values", "count": 4},
     ]
 
     ground_truth = {
-        "deduplication":    {"exact_dupes": len(dup_exact), "near_dupes": len(dup_near)},
-        "region":           {"action": "normalize", "mapping": {v: k for k, variants in region_variants.items() for v in variants}},
-        "country":          {"action": "normalize", "mapping": {v: k for k, variants in country_variants.items() for v in variants}},
-        "status":           {"action": "normalize", "method": "lowercase"},
-        "null_variants":    {"representations": null_variants, "replace_with": None},
-        "age":              {"action": "clip", "lower": 0, "upper": 120},
-        "annual_revenue":   {"action": "clip", "lower": 0},
+        "deduplication":  {"exact_dupes": len(dup_exact), "near_dupes": len(dup_near)},
+        "region":         {"action": "normalize", "mapping": {
+            v: k for k, variants in region_variants.items() for v in variants
+        }},
+        "country":        {"action": "normalize", "mapping": {
+            v: k for k, variants in country_variants.items() for v in variants
+        }},
+        "status":         {"action": "normalize", "method": "lowercase"},
+        "null_variants":  {"representations": null_variants_list, "replace_with": None},
+        "age":            {"action": "clip", "lower": 0, "upper": 120},
+        "annual_revenue": {"action": "clip", "lower": 0},
     }
 
     return {
         "task_name":        "schema_normalization_dedup",
         "difficulty":       "hard",
-        "description":      "A CRM customer dataset with duplicates, inconsistent formats, schema violations, and multiple NULL representations. A comprehensive cleaning challenge.",
-        "objective":        "Deduplicate rows, normalize region/country/status formats, standardize NULL representations, and fix schema violations in age and annual_revenue.",
+        "source":           "real-world-inspired (real names, companies, email patterns)",
+        "description":      (
+            "CRM customer dataset using real-world naming conventions. "
+            "Contains duplicate records, inconsistent formats, schema violations, "
+            "and multiple NULL representations."
+        ),
+        "objective":        "Deduplicate, normalize formats, fix schema violations, standardize NULLs.",
         "dataframe":        df,
         "clean_dataframe":  clean_df,
         "ground_truth":     ground_truth,
@@ -489,10 +498,10 @@ def generate_task3_dataset(seed: int = 42) -> Dict[str, Any]:
         "total_rows":       len(df),
         "max_steps":        25,
         "scoring_criteria": [
-            "Deduplication: recall × precision of removed rows (0.30)",
-            "Format normalization: % of columns correctly standardized (0.30)",
-            "Schema fix: % of violations corrected (0.20)",
-            "NULL handling: % of null variants replaced with proper NaN (0.20)",
+            "Deduplication → 0.30",
+            "Format normalization (region/country/status) → 0.30",
+            "Schema fixes (age/revenue) → 0.20",
+            "NULL standardization → 0.20",
         ],
     }
 
@@ -509,35 +518,26 @@ TASK_GENERATORS = {
 
 
 def get_dataset(task_name: str, seed: int = 42) -> Dict[str, Any]:
-    """Return a fresh dataset dict for the given task name."""
     if task_name not in TASK_GENERATORS:
-        raise ValueError(f"Unknown task: '{task_name}'. Valid tasks: {list(TASK_GENERATORS)}")
+        raise ValueError(f"Unknown task: '{task_name}'. Valid: {list(TASK_GENERATORS)}")
     return TASK_GENERATORS[task_name](seed=seed)
 
 
 def get_all_tasks(seed: int = 42) -> Dict[str, Dict[str, Any]]:
-    """Return datasets for all 3 tasks."""
     return {name: gen(seed=seed) for name, gen in TASK_GENERATORS.items()}
 
 
 def dataframe_to_records(df: pd.DataFrame, max_rows: int = 10) -> List[Dict[str, Any]]:
-    """Convert a DataFrame to JSON-serialisable records."""
     return _df_to_records(df, max_rows=max_rows)
 
 
 def get_column_stats(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    """Return per-column statistics."""
     return _col_stats(df)
 
 
 def detect_issues(df: pd.DataFrame, task_name: str, ground_truth: Dict) -> List[Dict[str, Any]]:
-    """
-    Re-scan a (partially cleaned) dataframe and return remaining issues.
-    Used by the environment to update hints after each step.
-    """
     issues = []
 
-    # Missing values
     for col in df.columns:
         null_count = int(df[col].isna().sum())
         if null_count > 0:
@@ -549,9 +549,8 @@ def detect_issues(df: pd.DataFrame, task_name: str, ground_truth: Dict) -> List[
                 "count":       null_count,
             })
 
-    # Type errors — check if numeric columns are still stored as object
     if task_name == "type_errors_and_outliers":
-        for col in ["price", "quantity", "rating"]:
+        for col in ["unit_price", "quantity", "rating"]:
             if col in df.columns and df[col].dtype == object:
                 issues.append({
                     "issue_type":  "wrong_dtype",
@@ -560,18 +559,19 @@ def detect_issues(df: pd.DataFrame, task_name: str, ground_truth: Dict) -> List[
                     "description": f"'{col}' is still a string — needs casting",
                     "count":       int(len(df)),
                 })
-        if "discount_pct" in df.columns and pd.api.types.is_numeric_dtype(df["discount_pct"]) and df["discount_pct"].dtype != bool:
-            bad = ((df["discount_pct"] < 0) | (df["discount_pct"] > 100)).sum()
+        if "discount_pct" in df.columns \
+                and pd.api.types.is_numeric_dtype(df["discount_pct"]) \
+                and df["discount_pct"].dtype != bool:
+            bad = int(((df["discount_pct"] < 0) | (df["discount_pct"] > 100)).sum())
             if bad:
                 issues.append({
                     "issue_type":  "outlier",
                     "column":      "discount_pct",
                     "severity":    "high",
                     "description": f"discount_pct still has {bad} out-of-range values",
-                    "count":       int(bad),
+                    "count":       bad,
                 })
 
-    # Duplicates
     if task_name == "schema_normalization_dedup":
         dup_count = int(df.duplicated().sum())
         if dup_count:
@@ -582,8 +582,6 @@ def detect_issues(df: pd.DataFrame, task_name: str, ground_truth: Dict) -> List[
                 "description": f"{dup_count} duplicate rows remain",
                 "count":       dup_count,
             })
-
-        # Schema violations
         if "age" in df.columns and pd.api.types.is_numeric_dtype(df["age"]):
             bad_age = int(((df["age"] < 0) | (df["age"] > 120)).sum())
             if bad_age:
@@ -599,7 +597,6 @@ def detect_issues(df: pd.DataFrame, task_name: str, ground_truth: Dict) -> List[
 
 
 if __name__ == "__main__":
-    # Quick smoke test
     print("=" * 60)
     print("  Dataset Generator — Smoke Test")
     print("=" * 60)
@@ -607,11 +604,9 @@ if __name__ == "__main__":
     for task_name, generator in TASK_GENERATORS.items():
         data = generator(seed=42)
         df   = data["dataframe"]
-        print(f"\n📋 Task: {data['task_name']} ({data['difficulty'].upper()})")
-        print(f"   Rows      : {len(df)}")
-        print(f"   Columns   : {list(df.columns)}")
-        print(f"   Issues    : {len(data['issues'])}")
-        print(f"   Max steps : {data['max_steps']}")
+        print(f"\n📋 {data['task_name']} ({data['difficulty'].upper()})")
+        print(f"   Source : {data.get('source', 'unknown')}")
+        print(f"   Rows   : {len(df)} | Columns: {list(df.columns)}")
         for issue in data["issues"]:
             print(f"   ⚠  [{issue['severity']:6s}] {issue['description']}")
 
