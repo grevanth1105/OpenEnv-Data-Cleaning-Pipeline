@@ -1,14 +1,19 @@
 """
 baseline.py — LLM baseline agent for Data Cleaning Pipeline OpenEnv
 ====================================================================
-Runs an OpenAI model against all 3 tasks and reports reproducible scores.
+Runs a model against all 3 tasks via the HuggingFace Router.
+No OpenAI key needed — just your HF token.
 
 Usage:
-    export OPENAI_API_KEY=sk-...
-    export OPENAI_BASE_URL=https://api.openai.com/v1   # optional
+    export HF_TOKEN=hf_...          # HuggingFace token (free)
     python baseline.py
-    python baseline.py --model gpt-4o-mini --seed 42 --task all
+    python baseline.py --model Qwen/Qwen2.5-72B-Instruct --seed 42
     python baseline.py --task missing_value_imputation
+
+    # Optional: use OpenAI directly
+    export OPENAI_API_KEY=sk-...
+    export USE_OPENAI=true
+    python baseline.py --model gpt-4o-mini
 """
 
 from __future__ import annotations
@@ -219,28 +224,38 @@ def run_episode(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Data Cleaning Pipeline — LLM Baseline")
-    parser.add_argument("--model",  default=os.getenv("BASELINE_MODEL", "gpt-4o-mini"))
-    parser.add_argument("--seed",   default=42, type=int)
-    parser.add_argument("--task",   default="all",
-                        choices=["all"] + TASK_NAMES)
-    parser.add_argument("--url",    default="", help="Environment server URL (optional)")
+    parser.add_argument("--model", default=os.getenv("BASELINE_MODEL", "Qwen/Qwen2.5-72B-Instruct"))
+    parser.add_argument("--seed",  default=42, type=int)
+    parser.add_argument("--task",  default="all", choices=["all"] + TASK_NAMES)
+    parser.add_argument("--url",   default="", help="Environment server URL (optional)")
     args = parser.parse_args()
 
-    # --- Validate API key ---
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("❌ OPENAI_API_KEY not set.")
-        sys.exit(1)
+    # --- API client setup ---
+    # Priority: HF Router (free) → OpenAI (paid)
+    use_openai = os.getenv("USE_OPENAI", "false").lower() == "true"
 
-    client = OpenAI(
-        api_key  = api_key,
-        base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-    )
+    if use_openai:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            print("❌ USE_OPENAI=true but OPENAI_API_KEY not set.")
+            sys.exit(1)
+        base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        print(f"  Using : OpenAI API")
+    else:
+        # HuggingFace Router — uses HF_TOKEN, no OpenAI key needed
+        api_key = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
+        if not api_key:
+            print("❌ HF_TOKEN not set.")
+            print("   Get yours at: https://huggingface.co/settings/tokens")
+            print("   Then: export HF_TOKEN=hf_...")
+            sys.exit(1)
+        base_url = "https://router.huggingface.co/v1"
+        print(f"  Using : HuggingFace Router (free tier)")
 
-    agent = LLMAgent(model=args.model, client=client)
-    env   = DataCleaningEnvironment()
-
-    tasks = TASK_NAMES if args.task == "all" else [args.task]
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    agent  = LLMAgent(model=args.model, client=client)
+    env    = DataCleaningEnvironment()
+    tasks  = TASK_NAMES if args.task == "all" else [args.task]
 
     print("=" * 60)
     print("  Data Cleaning Pipeline — LLM Baseline")

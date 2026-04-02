@@ -12,29 +12,59 @@ tags:
   - rl-environment
 ---
 
-# Data Cleaning Pipeline — OpenEnv
+# 🧹 Data Cleaning Pipeline — OpenEnv
 
-An RL environment where AI agents learn to clean real-world datasets.
-Agents interact through the standard OpenEnv `reset()` / `step()` / `state()` API,
-receiving dense reward signals at every cleaning action — not just at episode end.
+> An RL environment where AI agents learn to clean real-world datasets through interaction and reward.
 
-[![OpenEnv](https://img.shields.io/badge/OpenEnv-compatible-blue)](https://github.com/meta-pytorch/OpenEnv)
-[![HF Space](https://img.shields.io/badge/HuggingFace-Space-yellow)](https://huggingface.co/spaces/revanth11/data-cleaning-env)
-[![GitHub](https://img.shields.io/badge/GitHub-grevanth1105-black?logo=github)](https://github.com/grevanth1105/OpenEnv-Data-Cleaning-Pipeline)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/grevanth1105/OpenEnv-Data-Cleaning-Pipeline/blob/main/training_demo.ipynb)
+[![HF Space](https://img.shields.io/badge/HuggingFace-Space-yellow?logo=huggingface)](https://huggingface.co/spaces/revanth11/data-cleaning-env)
+[![GitHub](https://img.shields.io/badge/GitHub-Source-black?logo=github)](https://github.com/grevanth1105/OpenEnv-Data-Cleaning-Pipeline)
+[![OpenEnv](https://img.shields.io/badge/OpenEnv-compatible-blue)](https://github.com/meta-pytorch/OpenEnv)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
 ---
 
-## Why data cleaning?
+## Why Data Cleaning?
 
-Data cleaning is one of the most time-consuming tasks in any data-driven organisation —
-estimates put it at 60–80% of a data scientist's time. It is rule-rich, context-dependent,
-and hard to automate with simple heuristics. This makes it an ideal environment for training
-and evaluating LLM-based agents: the task is real, the feedback is measurable, and the
-difficulty scales naturally from trivial to frontier-model-challenging.
+Data cleaning consumes **60–80% of a data scientist's time** in real organisations. It is:
 
-Datasets are procedurally generated with controlled noise injection,
-ensuring reproducible episodes and deterministic grading.
+- **Rule-rich** — domain knowledge drives every decision
+- **Context-dependent** — the right action depends on the full dataset state
+- **Measurable** — success is objectively scorable (nulls removed, types correct, duplicates gone)
+- **Naturally graded** — easy → medium → hard difficulty emerges from the data itself
+
+This makes it an ideal RL training ground: real task, dense feedback, clear success criteria.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  TRAINING (Colab / local GPU)                                   │
+│                                                                  │
+│  GRPOTrainer (TRL)                                              │
+│    └── rollout_func()                                           │
+│          ├── LLM generates JSON action                          │
+│          ├── Action sent to environment via HTTP                │
+│          └── 4 reward signals collected                         │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │  HTTP / WebSocket
+                           │  POST /reset  POST /step
+┌──────────────────────────▼──────────────────────────────────────┐
+│  ENVIRONMENT (HF Spaces — Docker)                               │
+│                                                                  │
+│  FastAPI Server                                                  │
+│    ├── /reset   → load real dataset + inject noise              │
+│    ├── /step    → execute cleaning action + compute reward      │
+│    ├── /grader  → score cleaned dataset (0.0–1.0)               │
+│    ├── /tasks   → task list + action schema                     │
+│    └── /baseline → heuristic baseline scores                    │
+│                                                                  │
+│  3 Tasks: Easy → Medium → Hard                                  │
+│  Dense reward at every step (not just episode end)              │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -42,61 +72,61 @@ ensuring reproducible episodes and deterministic grading.
 
 ### Task 1 — Missing Value Imputation `easy`
 
-**Dataset:** HR employee records (120 rows, 7 columns)
+**Dataset:** Titanic passengers (real data, 200 rows, 8 columns)
 
-**Issues injected:**
-- `age` — 20% missing → correct strategy: median
-- `salary` — 15% missing → correct strategy: mean
-- `department` — 10% missing → correct strategy: mode
-- `years_exp` — 25% missing → correct strategy: median
-- `is_manager` — 5% missing → correct strategy: mode
+| Column | Issue | Correct Strategy |
+|---|---|---|
+| `age` | 10–20% missing | median |
+| `fare` | 15% missing | mean |
+| `embarked` | 5% missing | mode |
+| `years_aboard` | 25% missing | median |
 
-**Scoring:** Each correctly imputed column scores 0.20. Strategy match required for full credit.
+**Scoring:** Each column correctly imputed → +0.25. **Max: 1.0**
 
-**Expected scores:** random agent ~0.0 | good agent ~1.0
+**Expected:** random agent ~0.0 → good agent ~1.0
 
 ---
 
 ### Task 2 — Type Errors + Outlier Detection `medium`
 
-**Dataset:** E-commerce orders (150 rows, 8 columns)
+**Dataset:** Sales transactions (150 rows, 8 columns)
 
-**Issues injected:**
-- `price` stored as `"$5.99"` string → cast to float
-- `quantity` stored as string → cast to int
-- `order_date` mixed formats (`%Y-%m-%d`, `%d/%m/%Y`, `%m-%d-%Y`) → normalize
-- `rating` stored as `"4.5 stars"` or `"N/A"` → cast to float, clip 0–5
-- `discount_pct` has values > 100% and < 0% → clip to [0, 100]
-- `weight_kg` has extreme outliers (>500kg) → clip with IQR
+| Column | Issue | Fix |
+|---|---|---|
+| `unit_price` | `"$5.99"` string | cast to float |
+| `quantity` | stored as string | cast to int |
+| `order_date` | mixed formats (`%Y-%m-%d`, `%d/%m/%Y`, etc.) | normalize |
+| `rating` | `"4.5 stars"` / `"N/A"` | cast to float, clip 0–5 |
+| `discount_pct` | values > 100% and < 0% | clip to [0, 100] |
+| `region` | `NORTH` / `north` / `North` | normalize to title case |
 
-**Scoring:** Type fixes 0.60, outlier handling 0.30, row preservation 0.10.
+**Scoring:** Type fixes 0.60, outlier handling 0.20, region 0.15, row preservation 0.10. **Max: 1.0**
 
-**Expected scores:** random agent ~0.46 | good agent ~0.93
+**Expected:** random agent ~0.39 → good agent ~0.93
 
 ---
 
 ### Task 3 — Schema Normalization + Deduplication `hard`
 
-**Dataset:** CRM customer records (225 rows, 9 columns — 25 rows are duplicates)
+**Dataset:** CRM customers with real names/companies (225 rows, 10 columns — 25 duplicates)
 
-**Issues injected:**
-- 15 exact duplicate rows + 10 near-duplicate rows
-- `region` — 5 inconsistent variants (`North`, `north`, `N`, `Nth`, `NORTH`)
-- `country` — 5 inconsistent variants (`USA`, `US`, `United States`, `U.S.A`, `united states`)
-- `status` — mixed case (`active`, `ACTIVE`, `Active`)
-- `age` — negative values and values > 120
-- `annual_revenue` — negative values
-- `email`, `phone`, `region` — NULL variants (`N/A`, `none`, `-`, `""`, `NULL`)
+| Issue | Count | Fix |
+|---|---|---|
+| Exact + near-duplicate rows | 25 | deduplicate |
+| `region` inconsistent variants | 5 per value | normalize mapping |
+| `country` inconsistent names/codes | 5 per value | normalize mapping |
+| `status` mixed case | 6 variants | lowercase |
+| `email`/`phone` NULL variants (`N/A`, `none`, `-`) | 20 | replace with NaN |
+| `age` negative / > 120 | 4 | clip [0, 120] |
+| `annual_revenue` negative | 4 | clip [0, ∞) |
 
-**Scoring:** Deduplication 0.30, format normalization 0.30, schema fixes 0.20, null handling 0.20.
+**Scoring:** Dedup 0.30, normalization 0.30, schema 0.20, nulls 0.20. **Max: 1.0**
 
-**Expected scores:** random agent ~0.34 | good agent ~0.81
+**Expected:** random agent ~0.35 → good agent ~0.80
 
 ---
 
-## Action space
-
-Every action is a JSON object with three fields:
+## Action Space
 
 ```json
 {
@@ -106,64 +136,122 @@ Every action is a JSON object with three fields:
 }
 ```
 
-| `action_type` | `column` | `params` | Effect |
-|---|---|---|---|
-| `impute` | required | `strategy`: mean/median/mode/constant/forward_fill/drop | Fill missing values |
-| `cast` | required | `dtype`: int/float/str/date/datetime | Change column type |
-| `normalize` | required | `format`, `method`, or `mapping` | Standardise formats |
-| `clip_outlier` | required | `lower`, `upper` (optional) | Clip to bounds |
-| `flag_outlier` | required | — | Add `<col>_is_outlier` boolean column |
-| `deduplicate` | optional | `subset`: list of columns | Remove duplicate rows |
-| `drop_column` | required | — | Remove a column |
-| `drop_rows` | required | `condition`: null/invalid_range | Remove matching rows |
-| `rename` | required | `new_name` | Rename a column |
-| `finish` | — | — | End episode, trigger final grader |
+| `action_type` | `params` | When to use |
+|---|---|---|
+| `impute` | `strategy`: mean/median/mode/constant | Missing values |
+| `cast` | `dtype`: int/float/str/date/datetime | Wrong data types |
+| `normalize` | `format`, `method`, or `mapping` | Format inconsistencies |
+| `clip_outlier` | `lower`, `upper` | Numeric outliers |
+| `flag_outlier` | — | Mark without removing |
+| `deduplicate` | `subset` (optional) | Duplicate rows |
+| `drop_column` | — | Remove column |
+| `drop_rows` | `condition`: null/invalid_range | Remove rows |
+| `rename` | `new_name` | Rename column |
+| `finish` | — | Signal episode complete |
 
 ---
 
-## Observation space
+## Observation Space
 
-Each `step()` returns a typed `DataCleaningObservation`:
+Each `step()` returns:
 
-| Field | Type | Description |
-|---|---|---|
-| `dataset_snapshot` | `list[dict]` | First 10 rows of current dataset |
-| `total_rows` | `int` | Current row count |
-| `total_columns` | `int` | Current column count |
-| `column_stats` | `list[ColumnStats]` | Per-column: dtype, null_count, null_pct, min, max, mean, outlier_count |
-| `issues_detected` | `list[IssueHint]` | Remaining issues with type, severity, count |
-| `issues_remaining` | `int` | Total issue count remaining |
-| `action_history` | `list[str]` | Last 10 actions taken |
-| `last_action_result` | `str` | Feedback from the last action |
-| `reward` | `float` | Reward from last action |
-| `cumulative_reward` | `float` | Total reward this episode |
-| `done` | `bool` | Episode complete flag |
-| `step_count` | `int` | Steps taken so far |
-| `task_name` | `str` | Current task identifier |
-| `task_description` | `str` | Natural language task description |
-| `task_difficulty` | `str` | easy / medium / hard |
-| `progress_pct` | `float` | Estimated fraction of issues resolved |
+```python
+DataCleaningObservation(
+    dataset_snapshot   = [...],  # first 10 rows as JSON
+    total_rows         = 200,
+    total_columns      = 8,
+    column_stats       = [...],  # dtype, null_count, outlier_count per column
+    issues_detected    = [...],  # remaining issues with severity
+    issues_remaining   = 3,
+    action_history     = [...],  # last 10 actions taken
+    last_action_result = "Imputed 'age' with median — 20 nulls fixed.",
+    reward             = 0.20,
+    cumulative_reward  = 0.60,
+    done               = False,
+    step_count         = 3,
+    task_name          = "missing_value_imputation",
+    task_difficulty    = "easy",
+    progress_pct       = 0.75,   # 0.0 → 1.0
+)
+```
 
 ---
 
-## Reward function
+## Reward Function
 
-Rewards are dense — the agent receives signal at every step:
+Dense rewards at **every step** — not just episode end:
 
-| Signal | Value | When |
+| Signal | Value | Trigger |
 |---|---|---|
-| Issue fixed | `+0.15` | A data quality issue is correctly resolved |
-| Column cleaned | `+0.05` | An entire column is fully cleaned |
-| Milestone bonus | `+0.10–0.30` | Key milestones (dedup complete, finish with high score) |
-| Destructive action | `-0.05 to -0.15` | Dropping valid data unnecessarily |
-| Repeated action | `-0.10` per repeat | Same action on same column more than once |
+| Issue fixed | `+0.15` | Data quality issue correctly resolved |
+| Column cleaned | `+0.05` | Entire column fully fixed |
+| Milestone bonus | `+0.10–0.30` | Dedup complete, high-score finish |
+| Destructive action | `-0.05 to -0.15` | Dropping valid data |
+| Repeated action | `-0.10` per repeat | Same action on same column again |
 | Invalid action | `-0.05` | Non-existent column, bad params |
 
-Total episode reward range: `[-1.0, 1.0]` per step.
+**Range:** `[-1.0, 1.0]` per step
+
+---
+
+## Benchmark Scores
+
+Reproducible baseline (heuristic agent, seed=42):
+
+| Task | Score | Difficulty |
+|---|---|---|
+| missing_value_imputation | **1.0000** | Easy |
+| type_errors_and_outliers | **0.9267** | Medium |
+| schema_normalization_dedup | **0.8045** | Hard |
+| **Mean** | **0.9104** | |
+
+Run yourself:
+```bash
+curl -X POST https://revanth11-data-cleaning-env.hf.space/baseline \
+     -H "Content-Type: application/json" \
+     -d '{"seed": 42}'
+```
+
+---
+
+## GRPO Training Demo
+
+Train Qwen3-1.7B to clean datasets through RL:
+
+**Open the notebook in Colab:**
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/grevanth1105/OpenEnv-Data-Cleaning-Pipeline/blob/main/training_demo.ipynb)
+
+**What the notebook does:**
+1. Connects to the live HF Space environment
+2. Loads Qwen3-1.7B via TRL + vLLM
+3. Defines 4 reward signals (correct, progress, efficiency, valid)
+4. Trains with GRPO using curriculum learning (easy → medium → hard)
+5. Shows before/after grader scores
+
+**4 reward signals:**
+```python
+reward_correct    # final grader score    (did it clean well?)
+reward_progress   # per-step improvement  (is each action useful?)
+reward_efficiency # fewer steps = bonus   (is it fast?)
+reward_valid      # parseable JSON output (is output well-formed?)
+```
+
+**Hardware:** A100-40GB (~60–90 min) | T4 works with smaller batch
 
 ---
 
 ## Setup
+
+### Live HF Space (zero setup)
+
+```bash
+# Health check
+curl https://revanth11-data-cleaning-env.hf.space/health
+
+# Interactive docs
+open https://revanth11-data-cleaning-env.hf.space/docs
+```
 
 ### Local — Uvicorn
 
@@ -178,16 +266,11 @@ uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
 
 ```bash
 docker build -t data-cleaning-env -f server/Dockerfile .
-docker run -d -p 8000:7860 \
-    -e WORKERS=4 \
-    -e MAX_CONCURRENT_ENVS=100 \
-    data-cleaning-env
-
+docker run -d -p 8000:7860 data-cleaning-env
 curl http://localhost:8000/health
-# {"status": "healthy", "sessions": 0}
 ```
 
-### HF Spaces — Pull from registry
+### HF Registry
 
 ```bash
 docker pull registry.hf.space/revanth11-data-cleaning-env:latest
@@ -198,31 +281,30 @@ docker run -d -p 8000:7860 registry.hf.space/revanth11-data-cleaning-env:latest
 
 ## Usage
 
-### Python client — sync
+### Python Client — Sync
 
 ```python
 from client import DataCleaningEnv
 from models import DataCleaningAction
 
 with DataCleaningEnv("https://revanth11-data-cleaning-env.hf.space").sync() as env:
-    tasks = env.tasks()
-
     obs = env.reset(task_name="missing_value_imputation", seed=42)
     print(f"Rows: {obs.total_rows} | Issues: {obs.issues_remaining}")
 
-    action = DataCleaningAction(
-        action_type="impute",
-        column="age",
-        params={"strategy": "median"},
+    obs, reward, done, info = env.step(
+        DataCleaningAction(
+            action_type="impute",
+            column="age",
+            params={"strategy": "median"},
+        )
     )
-    obs, reward, done, info = env.step(action)
-    print(f"Reward: {reward} | Progress: {obs.progress_pct:.0%}")
+    print(f"Reward: {reward:+.3f} | Progress: {obs.progress_pct:.0%}")
 
     result = env.grader()
-    print(f"Score: {result.score:.4f}")
+    print(f"Score: {result.score:.4f} — {result.feedback}")
 ```
 
-### Python client — async
+### Python Client — Async
 
 ```python
 import asyncio
@@ -232,10 +314,9 @@ from models import DataCleaningAction
 async def main():
     async with DataCleaningEnv("https://revanth11-data-cleaning-env.hf.space") as env:
         obs = await env.reset(task_name="type_errors_and_outliers")
-        action = DataCleaningAction(
-            action_type="cast", column="price", params={"dtype": "float"}
+        obs, reward, done, _ = await env.step(
+            DataCleaningAction(action_type="cast", column="unit_price", params={"dtype": "float"})
         )
-        obs, reward, done, info = await env.step(action)
 
 asyncio.run(main())
 ```
@@ -243,9 +324,6 @@ asyncio.run(main())
 ### Direct HTTP
 
 ```bash
-# Health check
-curl https://revanth11-data-cleaning-env.hf.space/health
-
 # Reset
 curl -X POST https://revanth11-data-cleaning-env.hf.space/reset \
      -H "Content-Type: application/json" \
@@ -256,88 +334,92 @@ curl -X POST https://revanth11-data-cleaning-env.hf.space/step \
      -H "Content-Type: application/json" \
      -d '{"action": {"action_type": "impute", "column": "age", "params": {"strategy": "median"}}}'
 
-# List tasks
-curl https://revanth11-data-cleaning-env.hf.space/tasks
-
 # Grader score
 curl -X POST https://revanth11-data-cleaning-env.hf.space/grader \
-     -H "Content-Type: application/json" \
-     -d '{"session_id": "default"}'
+     -H "Content-Type: application/json" -d '{"session_id": "default"}'
+
+# All tasks + action schema
+curl https://revanth11-data-cleaning-env.hf.space/tasks
 
 # Baseline scores
 curl -X POST https://revanth11-data-cleaning-env.hf.space/baseline \
-     -H "Content-Type: application/json" \
-     -d '{"seed": 42}'
+     -H "Content-Type: application/json" -d '{"seed": 42}'
 ```
 
----
+### LLM Baseline (HF Router — free)
 
-## Baseline
+```bash
+export HF_TOKEN=hf_...
+python baseline.py --model Qwen/Qwen2.5-72B-Instruct --seed 42
+# Saves results to baseline_results.json
+```
 
-Run the LLM baseline agent (requires `OPENAI_API_KEY`):
+### LLM Baseline (OpenAI — optional)
 
 ```bash
 export OPENAI_API_KEY=sk-...
+export USE_OPENAI=true
 python baseline.py --model gpt-4o-mini --seed 42
 ```
 
-**Reproducible baseline scores (gpt-4o-mini, seed=42):**
-
-| Task | Score |
-|---|---|
-| missing_value_imputation | **1.0000** |
-| type_errors_and_outliers | **0.9260** |
-| schema_normalization_dedup | **0.8054** |
-| **Mean** | **0.9105** |
-
-Results are saved to `baseline_results.json` after each run.
-
 ---
 
-## API reference
+## API Reference
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/health` | GET | Server health check |
-| `/reset` | POST | Start a new episode |
-| `/step` | POST | Execute a cleaning action |
+| `/health` | GET | Server health — `{"status": "healthy"}` |
+| `/reset` | POST | Start new episode, returns initial observation |
+| `/step` | POST | Execute cleaning action, returns obs + reward |
 | `/state` | GET | Full episode state |
-| `/tasks` | GET | Task list + action schema |
-| `/grader` | POST | Score current dataset state |
-| `/baseline` | POST | Run heuristic baseline, return all 3 scores |
-| `/ws` | WS | Persistent WebSocket session |
-| `/docs` | GET | Interactive API documentation |
+| `/tasks` | GET | All tasks with descriptions + action schema |
+| `/grader` | POST | Score current dataset state (0.0–1.0) |
+| `/baseline` | POST | Heuristic baseline scores for all 3 tasks |
+| `/ws` | WebSocket | Persistent session (low latency) |
+| `/docs` | GET | Interactive Swagger UI |
 
 ---
 
-## Project structure
+## Project Structure
 
 ```
 data-cleaning-env/
-├── models.py              Pydantic typed models (Action, Observation, State)
-├── dataset_generator.py   Reproducible messy dataset generation
-├── graders.py             Deterministic task graders (0.0–1.0)
-├── environment.py         Core RL environment logic
-├── client.py              HTTP + WebSocket client
-├── baseline.py            LLM baseline inference script
-├── openenv.yaml           OpenEnv manifest
-├── requirements.txt       Pinned dependencies
-├── pyproject.toml         Package metadata
-├── README.md              This file
+├── models.py              ← Pydantic typed models (Action, Observation, State)
+├── dataset_generator.py   ← Real dataset loading + controlled noise injection
+├── graders.py             ← Deterministic task graders (0.0–1.0)
+├── environment.py         ← Core RL loop + reward shaping
+├── client.py              ← Async + sync HTTP/WebSocket client
+├── baseline.py            ← LLM baseline inference script
+├── training_demo.ipynb    ← GRPO training demo (Colab-ready)
+├── openenv.yaml           ← OpenEnv manifest
+├── requirements.txt       ← Pinned dependencies
+├── pyproject.toml         ← Package metadata
+├── README.md              ← This file
 └── server/
-    ├── app.py             FastAPI server
-    └── Dockerfile         Container definition
+    ├── app.py             ← FastAPI server (9 endpoints)
+    └── Dockerfile         ← Container definition
 ```
 
 ---
 
-## Environment variables
+## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `PORT` | `7860` | Server port (7860 for HF Spaces) |
+| `PORT` | `7860` | Server port (HF Spaces uses 7860) |
 | `HOST` | `0.0.0.0` | Bind address |
 | `WORKERS` | `4` | Uvicorn worker processes |
 | `MAX_CONCURRENT_ENVS` | `100` | Max WebSocket sessions |
-| `OPENAI_API_KEY` | — | Required for `baseline.py` |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Optional custom endpoint |
+| `HF_TOKEN` | — | HuggingFace token — required for `baseline.py` |
+| `USE_OPENAI` | `false` | Set `true` to use OpenAI instead of HF Router |
+| `OPENAI_API_KEY` | — | Only needed if `USE_OPENAI=true` |
+
+---
+
+## Resources
+
+- 🌍 [Live Environment — HF Space](https://huggingface.co/spaces/revanth11/data-cleaning-env)
+- 💻 [Source Code — GitHub](https://github.com/grevanth1105/OpenEnv-Data-Cleaning-Pipeline)
+- 📓 [GRPO Training Demo — Colab](https://colab.research.google.com/github/grevanth1105/OpenEnv-Data-Cleaning-Pipeline/blob/main/training_demo.ipynb)
+- 🔧 [OpenEnv Framework](https://github.com/meta-pytorch/OpenEnv)
+- 🤗 [TRL GRPO Docs](https://huggingface.co/docs/trl/main/en/grpo_trainer)
