@@ -18,6 +18,7 @@ from dataset_generator import (
     detect_issues,
 )
 from graders import grade
+from code_sandbox import execute_cleaning_code, score_code_execution
 from models import (
     ActionType,
     DataCleaningAction,
@@ -195,6 +196,8 @@ class DataCleaningEnvironment:
                 rb, msg = self._do_drop_rows(action)
             elif action.action_type == ActionType.RENAME:
                 rb, msg = self._do_rename(action)
+            elif action.action_type == ActionType.EXECUTE_CODE:
+                rb, msg = self._do_execute_code(action)
             else:
                 msg = f"Unknown action type: {action.action_type}"
                 rb.invalid_action = -0.05
@@ -485,6 +488,37 @@ class DataCleaningEnvironment:
             return rb, "Rename requires valid column and params.new_name."
         self._df.rename(columns={col: new_name}, inplace=True)
         return rb, f"Renamed '{col}' → '{new_name}'."
+
+    def _do_execute_code(self, action: DataCleaningAction) -> Tuple[RewardBreakdown, str]:
+        """
+        Execute agent-provided Python cleaning code in a sandbox.
+        The agent gets `df` (the current dataframe) and `pd`/`np` in scope.
+        """
+        rb   = RewardBreakdown()
+        code = action.params.get("code", "").strip()
+
+        if not code:
+            rb.invalid_action = -0.05
+            return rb, "params.code is required for execute_code action."
+
+        before_df = self._df.copy()
+        result_df, message, success = execute_cleaning_code(self._df, code)
+
+        if success:
+            # Compute reward based on what actually changed
+            reward = score_code_execution(before_df, result_df, success)
+            self._df = result_df  # apply changes
+            rb.issues_fixed = max(0.0, reward)
+            rb.destructive_action = min(0.0, reward)
+        else:
+            rb.invalid_action = -0.05
+
+        rb.total = round(
+            rb.issues_fixed + rb.column_fixed + rb.milestone_bonus
+            + rb.destructive_action + rb.repeated_action + rb.invalid_action,
+            4,
+        )
+        return rb, message
 
     def _handle_finish(self) -> Tuple[RewardBreakdown, str]:
         rb = RewardBreakdown()

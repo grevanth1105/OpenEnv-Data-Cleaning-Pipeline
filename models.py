@@ -27,6 +27,7 @@ class ActionType(str, Enum):
     FLAG_OUTLIER  = "flag_outlier"   # Mark outliers with a boolean column
     DEDUPLICATE   = "deduplicate"    # Remove duplicate rows
     RENAME        = "rename"         # Rename a column
+    EXECUTE_CODE  = "execute_code"   # Run Python code directly in sandbox
     FINISH        = "finish"         # Signal episode completion
 
 
@@ -303,10 +304,11 @@ ACTION_SCHEMA = {
 }
 
 EXAMPLE_ACTIONS = {
-    ActionType.IMPUTE:       {"action_type": "impute",       "column": "age",    "params": {"strategy": "median"}},
-    ActionType.CAST:         {"action_type": "cast",         "column": "price",  "params": {"dtype": "float"}},
-    ActionType.NORMALIZE:    {"action_type": "normalize",    "column": "date",   "params": {"format": "%Y-%m-%d"}},
-    ActionType.CLIP_OUTLIER: {"action_type": "clip_outlier", "column": "salary", "params": {"lower": 0.05, "upper": 0.95}},
-    ActionType.DEDUPLICATE:  {"action_type": "deduplicate",  "column": None,     "params": {}},
-    ActionType.FINISH:       {"action_type": "finish",       "column": None,     "params": {}},
+    ActionType.IMPUTE:        {"action_type": "impute",       "column": "age",    "params": {"strategy": "median"}},
+    ActionType.CAST:          {"action_type": "cast",         "column": "price",  "params": {"dtype": "float"}},
+    ActionType.NORMALIZE:     {"action_type": "normalize",    "column": "date",   "params": {"format": "%Y-%m-%d"}},
+    ActionType.CLIP_OUTLIER:  {"action_type": "clip_outlier", "column": "salary", "params": {"lower": 0.05, "upper": 0.95}},
+    ActionType.DEDUPLICATE:   {"action_type": "deduplicate",  "column": None,     "params": {}},
+    ActionType.EXECUTE_CODE:  {"action_type": "execute_code", "column": None,     "params": {"code": "df['age'] = df['age'].fillna(df['age'].median())"}},
+    ActionType.FINISH:        {"action_type": "finish",       "column": None,     "params": {}},
 }
