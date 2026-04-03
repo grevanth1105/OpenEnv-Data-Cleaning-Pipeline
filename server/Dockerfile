@@ -34,6 +34,7 @@ COPY environment.py        .
 COPY client.py             .
 COPY baseline.py           .
 COPY openenv.yaml          .
+COPY code_sandbox.py       .
 COPY server/app.py         ./server/app.py
 
 # ---------------------------------------------------------------------------
