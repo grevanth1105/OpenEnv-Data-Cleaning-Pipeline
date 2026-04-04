@@ -14,5 +14,3 @@ openai==1.40.0
 
 # YAML parsing (openenv.yaml)
 pyyaml==6.0.2
-
-gradio

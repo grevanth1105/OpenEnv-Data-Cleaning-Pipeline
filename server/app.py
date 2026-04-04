@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 
 from environment import DataCleaningEnvironment, TASK_NAMES
@@ -29,13 +29,6 @@ from models import (
     TaskDifficulty,
     TaskInfo,
 )
-
-# Mount Gradio Web UI at /web
-try:
-    from web_ui import mount_gradio
-    _GRADIO_AVAILABLE = True
-except ImportError:
-    _GRADIO_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Session store — one environment instance per WebSocket session
@@ -74,10 +67,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Mount Gradio web UI at /web
-if _GRADIO_AVAILABLE:
-    app = mount_gradio(app)
-
 
 # ---------------------------------------------------------------------------
 # Request/Response schemas
@@ -110,6 +99,370 @@ class BaselineRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "healthy", "sessions": len(_sessions)}
+
+
+@app.get("/web", response_class=HTMLResponse)
+def web_ui():
+    """Interactive web UI for testing the environment manually."""
+    return HTMLResponse(content=_WEB_UI_HTML)
+
+
+# ---------------------------------------------------------------------------
+# Web UI HTML (self-contained, no dependencies)
+# ---------------------------------------------------------------------------
+
+_WEB_UI_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Data Cleaning Pipeline — OpenEnv</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f0f1a; color: #e0e0e0; padding: 20px; }
+  h1 { color: #60a5fa; margin-bottom: 4px; font-size: 1.4rem; }
+  h3 { color: #94a3b8; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+  .subtitle { color: #64748b; font-size: 0.85rem; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: 280px 1fr; gap: 16px; }
+  .card { background: #1e1e2e; border-radius: 10px; padding: 16px; border: 1px solid #2a2a4a; }
+  label { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 4px; margin-top: 10px; }
+  select, input, textarea {
+    width: 100%; padding: 8px 10px; border-radius: 6px;
+    background: #16213e; border: 1px solid #2a2a4a; color: #e0e0e0;
+    font-size: 0.85rem; outline: none;
+  }
+  select:focus, input:focus, textarea:focus { border-color: #60a5fa; }
+  textarea { resize: vertical; font-family: monospace; }
+  button {
+    width: 100%; padding: 10px; border-radius: 6px; border: none;
+    cursor: pointer; font-size: 0.9rem; font-weight: 600; margin-top: 10px;
+    transition: all 0.2s;
+  }
+  .btn-primary { background: #3b82f6; color: white; }
+  .btn-primary:hover { background: #2563eb; }
+  .btn-secondary { background: #1e293b; color: #94a3b8; border: 1px solid #2a2a4a; }
+  .btn-secondary:hover { background: #2a2a4a; }
+  .btn-danger { background: #7f1d1d; color: #fca5a5; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  th { background: #1a1a2e; color: #94a3b8; padding: 6px 10px; text-align: left; border: 1px solid #2a2a4a; }
+  td { padding: 5px 10px; border: 1px solid #1e1e3a; }
+  .null-cell { background: #3d0000 !important; color: #ff6b6b; }
+  .issue-col th { background: #2d1a00 !important; color: #fb923c; }
+  .even-row { background: #1e1e2e; }
+  .odd-row  { background: #16213e; }
+  .issue-item { padding: 5px 10px; margin: 3px 0; border-radius: 4px; font-size: 0.8rem; border-left: 3px solid; }
+  .high   { border-color: #ef4444; background: #1a0000; }
+  .medium { border-color: #f97316; background: #1a0d00; }
+  .low    { border-color: #facc15; background: #1a1a00; }
+  .log-item { padding: 4px 8px; margin: 2px 0; background: #16213e; border-radius: 4px; font-size: 0.78rem; color: #94a3b8; }
+  .progress-bar { height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; margin: 6px 0; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #60a5fa); border-radius: 4px; transition: width 0.4s; }
+  .reward-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.78rem; font-weight: bold; }
+  .pos { background: #064e3b; color: #4ade80; }
+  .neg { background: #450a0a; color: #f87171; }
+  .neu { background: #1e293b; color: #94a3b8; }
+  .status-box { padding: 10px; border-radius: 6px; margin-top: 10px; font-size: 0.85rem; min-height: 40px; background: #1e293b; border: 1px solid #2a2a4a; }
+  .status-ok   { border-color: #16a34a; color: #4ade80; }
+  .status-err  { border-color: #dc2626; color: #f87171; }
+  .status-info { border-color: #2563eb; color: #93c5fd; }
+  #dataset-table { overflow-x: auto; max-height: 280px; overflow-y: auto; }
+  .hint { font-size: 0.75rem; color: #4b5563; margin-top: 3px; font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>🧹 Data Cleaning Pipeline — OpenEnv</h1>
+<p class="subtitle">Interactive environment for testing RL agents on real-world data cleaning tasks.</p>
+
+<div class="grid">
+
+  <!-- LEFT: Controls -->
+  <div>
+    <div class="card">
+      <h3>⚙️ Episode Setup</h3>
+      <label>Task</label>
+      <select id="task-select">
+        <option value="missing_value_imputation">🟢 Easy — Missing Value Imputation</option>
+        <option value="type_errors_and_outliers">🟡 Medium — Type Errors + Outliers</option>
+        <option value="schema_normalization_dedup">🔴 Hard — Schema Normalization + Dedup</option>
+      </select>
+      <label>Seed</label>
+      <input type="number" id="seed" value="42" min="1" max="999">
+      <button class="btn-primary" onclick="doReset()">🔄 Reset Episode</button>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h3>🎯 Cleaning Action</h3>
+      <label>Action Type</label>
+      <select id="action-type" onchange="updateParamsHint()">
+        <option value="impute">impute — fill missing values</option>
+        <option value="cast">cast — fix wrong types</option>
+        <option value="normalize">normalize — fix formats</option>
+        <option value="clip_outlier">clip_outlier — remove outliers</option>
+        <option value="deduplicate">deduplicate — remove duplicates</option>
+        <option value="execute_code">execute_code — run Python</option>
+        <option value="flag_outlier">flag_outlier — mark outliers</option>
+        <option value="drop_rows">drop_rows — remove rows</option>
+        <option value="finish">finish — end episode</option>
+      </select>
+      <label>Column <span class="hint">(leave blank for dataset-wide ops)</span></label>
+      <select id="column-select"><option value="">(select column)</option></select>
+      <label>Params (JSON)</label>
+      <textarea id="params" rows="3">{"strategy": "median"}</textarea>
+      <p class="hint" id="params-hint">impute: strategy = mean / median / mode</p>
+      <button class="btn-primary" onclick="doStep()">▶ Execute Action</button>
+      <button class="btn-secondary" onclick="doGrader()">📊 Check Score</button>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h3>📈 Progress</h3>
+      <div id="progress-text" style="font-size:0.85rem;color:#94a3b8">0% complete</div>
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+      <div id="reward-text" style="font-size:0.8rem;color:#64748b;margin-top:4px">Reward: +0.00 | Total: 0.00 | Step: 0</div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Data + Info -->
+  <div>
+    <div class="card">
+      <h3>📋 Dataset (first 12 rows) <span id="dataset-meta" style="color:#4b5563;font-weight:normal"></span></h3>
+      <div id="dataset-table"><p style="color:#4b5563">Click Reset to load dataset.</p></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+      <div class="card">
+        <h3>⚠️ Issues Detected</h3>
+        <div id="issues-list"><p style="color:#4b5563">No data loaded.</p></div>
+      </div>
+      <div class="card">
+        <h3>📝 Action Log</h3>
+        <div id="action-log"><p style="color:#4b5563">No actions yet.</p></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h3>💬 Status</h3>
+      <div class="status-box status-info" id="status-box">Ready — select a task and click Reset.</div>
+    </div>
+
+    <div class="card" style="margin-top:12px" id="grader-card" style="display:none">
+      <h3>📊 Grader Score</h3>
+      <div id="grader-result"><p style="color:#4b5563">Click Check Score to evaluate.</p></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const BASE = "";
+let sessionId = Math.random().toString(36).slice(2, 10);
+let columns   = [];
+
+const PARAMS_HINTS = {
+  impute:       '{"strategy": "median"}  // mean | median | mode | constant',
+  cast:         '{"dtype": "float"}  // int | float | str | date | datetime',
+  normalize:    '{"method": "lowercase"}  // or {"format": "%Y-%m-%d"} for dates',
+  clip_outlier: '{"lower": 0, "upper": 100}  // numeric bounds',
+  deduplicate:  '{}  // no params needed',
+  execute_code: '{"code": "df[\\'age\\'] = df[\\'age\\'].fillna(df[\\'age\\'].median())"}',
+  flag_outlier: '{}  // adds column_is_outlier flag',
+  drop_rows:    '{"condition": "null"}  // or "invalid_range" with lower/upper',
+  finish:       '{}  // triggers final grader score',
+};
+
+const PARAMS_DEFAULTS = {
+  impute:       '{"strategy": "median"}',
+  cast:         '{"dtype": "float"}',
+  normalize:    '{"method": "lowercase"}',
+  clip_outlier: '{"lower": 0, "upper": 100}',
+  deduplicate:  '{}',
+  execute_code: '{"code": "df[\\'age\\'] = df[\\'age\\'].fillna(df[\\'age\\'].median())"}',
+  flag_outlier: '{}',
+  drop_rows:    '{"condition": "null"}',
+  finish:       '{}',
+};
+
+function updateParamsHint() {
+  const action = document.getElementById("action-type").value;
+  document.getElementById("params").value    = PARAMS_DEFAULTS[action] || "{}";
+  document.getElementById("params-hint").textContent = PARAMS_HINTS[action] || "";
+}
+
+function setStatus(msg, type="info") {
+  const box = document.getElementById("status-box");
+  box.textContent = msg;
+  box.className = "status-box status-" + type;
+}
+
+function renderTable(snapshot, col_stats, issues) {
+  if (!snapshot || snapshot.length === 0) return "<p style='color:#4b5563'>No data.</p>";
+
+  const issueCols = new Set(issues.filter(i => i.column).map(i => i.column));
+  const nullCols  = new Set(col_stats.filter(s => s.null_count > 0).map(s => s.name));
+  const cols = Object.keys(snapshot[0]);
+
+  let html = "<table>";
+  html += "<tr>" + cols.map(c => {
+    const isIssue = issueCols.has(c);
+    const bg = isIssue ? "background:#2d1a00;color:#fb923c" : "background:#1a1a2e;color:#94a3b8";
+    return `<th style="${bg}">${c}</th>`;
+  }).join("") + "</tr>";
+
+  snapshot.slice(0, 12).forEach((row, idx) => {
+    html += `<tr class="${idx%2===0?'even-row':'odd-row'}">`;
+    cols.forEach(col => {
+      const val = row[col];
+      const isNull = val === null || val === undefined;
+      const cls = isNull ? "null-cell" : "";
+      html += `<td class="${cls}">${isNull ? "⬜ null" : String(val).slice(0, 18)}</td>`;
+    });
+    html += "</tr>";
+  });
+  html += "</table>";
+  return html;
+}
+
+function renderIssues(issues) {
+  if (!issues || issues.length === 0)
+    return "<p style='color:#4ade80;font-size:0.85rem'>✅ No issues!</p>";
+  return issues.slice(0, 8).map(i => {
+    const sev  = i.severity || "low";
+    const col  = i.column || "dataset";
+    const desc = (i.description || "").slice(0, 55);
+    return `<div class="issue-item ${sev}">
+      <b>${col}</b> — ${desc}
+      <span style="color:#555;font-size:0.75rem"> (${i.count})</span>
+    </div>`;
+  }).join("");
+}
+
+function renderLog(history) {
+  if (!history || history.length === 0)
+    return "<p style='color:#4b5563;font-size:0.8rem'>No actions yet.</p>";
+  return [...history].reverse().slice(0, 8).map(h =>
+    `<div class="log-item">${h}</div>`
+  ).join("");
+}
+
+function updateUI(obs) {
+  // Table
+  document.getElementById("dataset-table").innerHTML =
+    renderTable(obs.dataset_snapshot, obs.column_stats, obs.issues_detected);
+  document.getElementById("dataset-meta").textContent =
+    `${obs.total_rows} rows × ${obs.total_columns} cols`;
+
+  // Issues
+  document.getElementById("issues-list").innerHTML = renderIssues(obs.issues_detected);
+
+  // Log
+  document.getElementById("action-log").innerHTML = renderLog(obs.action_history);
+
+  // Progress
+  const pct = Math.round(obs.progress_pct * 100);
+  document.getElementById("progress-text").textContent = `${pct}% complete`;
+  document.getElementById("progress-fill").style.width  = `${pct}%`;
+
+  // Columns
+  columns = obs.column_stats.map(s => s.name);
+  const sel = document.getElementById("column-select");
+  sel.innerHTML = '<option value="">(all columns / dataset-wide)</option>' +
+    columns.map(c => `<option value="${c}">${c}</option>`).join("");
+}
+
+async function doReset() {
+  sessionId = Math.random().toString(36).slice(2, 10);
+  const task = document.getElementById("task-select").value;
+  const seed = document.getElementById("seed").value;
+  setStatus("Resetting...", "info");
+
+  try {
+    const resp = await fetch(`${BASE}/reset`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({task_name: task, seed: parseInt(seed), session_id: sessionId}),
+    });
+    const obs = await resp.json();
+    updateUI(obs);
+    document.getElementById("reward-text").textContent = "Reward: +0.00 | Total: 0.00 | Step: 0";
+    setStatus(`✅ Episode started | ${obs.task_name} | ${obs.total_rows} rows | ${obs.issues_remaining} issue groups`, "ok");
+  } catch(e) {
+    setStatus("❌ Reset failed: " + e.message, "err");
+  }
+}
+
+async function doStep() {
+  const action_type = document.getElementById("action-type").value;
+  const column      = document.getElementById("column-select").value || null;
+  const paramsRaw   = document.getElementById("params").value.trim();
+
+  let params = {};
+  try { params = JSON.parse(paramsRaw || "{}"); }
+  catch(e) { setStatus("❌ Invalid JSON in params: " + e.message, "err"); return; }
+
+  setStatus("Executing...", "info");
+  try {
+    const resp = await fetch(`${BASE}/step`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        session_id: sessionId,
+        action: {action_type, column, params},
+      }),
+    });
+    const data = await resp.json();
+    if (data.detail) { setStatus("❌ " + data.detail, "err"); return; }
+
+    const obs    = data.observation;
+    const reward = data.reward;
+    updateUI(obs);
+
+    const sign = reward > 0 ? "+" : "";
+    document.getElementById("reward-text").textContent =
+      `Reward: ${sign}${reward.toFixed(4)} | Total: ${obs.cumulative_reward.toFixed(4)} | Step: ${obs.step_count}`;
+
+    if (data.done) {
+      const gr = obs.metadata?.grader_result;
+      const score = gr ? gr.score.toFixed(4) : "?";
+      setStatus(`🏁 Episode done! Grader score: ${score}`, "ok");
+    } else {
+      const icon = reward > 0 ? "✅" : reward < 0 ? "❌" : "⚠️";
+      setStatus(`${icon} ${obs.last_action_result.slice(0, 100)}`, reward > 0 ? "ok" : reward < 0 ? "err" : "info");
+    }
+  } catch(e) {
+    setStatus("❌ Step failed: " + e.message, "err");
+  }
+}
+
+async function doGrader() {
+  try {
+    const resp = await fetch(`${BASE}/grader`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({session_id: sessionId}),
+    });
+    const result = await resp.json();
+    const breakdown = result.breakdown || {};
+    let html = `<div style="font-size:0.9rem;margin-bottom:8px">
+      <b style="color:${result.score >= 0.6 ? '#4ade80' : '#f87171'}">
+        Score: ${result.score.toFixed(4)}
+      </b> — ${result.feedback}
+    </div>`;
+    Object.entries(breakdown).forEach(([col, val]) => {
+      const w   = Math.round(parseFloat(val) * 20);
+      const bar = "█".repeat(w) + "░".repeat(20 - w);
+      html += `<div style="font-size:0.78rem;margin:2px 0;font-family:monospace;color:#94a3b8">
+        ${col.padEnd(25)} [${bar}] ${parseFloat(val).toFixed(4)}
+      </div>`;
+    });
+    document.getElementById("grader-result").innerHTML = html;
+    document.getElementById("grader-card").style.display = "block";
+  } catch(e) {
+    setStatus("❌ Grader failed: " + e.message, "err");
+  }
+}
+</script>
+</body>
+</html>"""
 
 
 @app.post("/reset")

@@ -32,7 +32,6 @@ COPY dataset_generator.py  .
 COPY graders.py            .
 COPY code_sandbox.py       .
 COPY environment.py        .
-COPY web_ui.py             .
 COPY client.py             .
 COPY baseline.py           .
 COPY openenv.yaml          .
