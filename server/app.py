@@ -30,6 +30,13 @@ from models import (
     TaskInfo,
 )
 
+# Mount Gradio Web UI at /web
+try:
+    from web_ui import mount_gradio
+    _GRADIO_AVAILABLE = True
+except ImportError:
+    _GRADIO_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Session store — one environment instance per WebSocket session
 # ---------------------------------------------------------------------------
@@ -66,6 +73,10 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Mount Gradio web UI at /web
+if _GRADIO_AVAILABLE:
+    app = mount_gradio(app)
 
 
 # ---------------------------------------------------------------------------
