@@ -101,6 +101,134 @@ def health():
     return {"status": "healthy", "sessions": len(_sessions)}
 
 
+@app.get("/", response_class=HTMLResponse)
+def root():
+    """Landing page with links to all endpoints."""
+    return HTMLResponse(content=_ROOT_HTML)
+
+
+_ROOT_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Data Cleaning Pipeline — OpenEnv</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f0f1a; color: #e0e0e0;
+         display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+  .container { max-width: 640px; width: 100%; }
+  h1 { color: #60a5fa; font-size: 1.8rem; margin-bottom: 6px; }
+  .tagline { color: #64748b; font-size: 0.9rem; margin-bottom: 28px; }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 28px; }
+  .badge { padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+  .badge-blue  { background: #1e3a5f; color: #60a5fa; }
+  .badge-green { background: #064e3b; color: #4ade80; }
+  .badge-yellow{ background: #451a03; color: #fbbf24; }
+  .section-title { color: #94a3b8; font-size: 0.75rem; text-transform: uppercase;
+                   letter-spacing: 1px; margin-bottom: 10px; }
+  .links { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 28px; }
+  a.link-card { display: block; padding: 14px 16px; background: #1e1e2e;
+                border: 1px solid #2a2a4a; border-radius: 10px; text-decoration: none;
+                color: #e0e0e0; transition: all 0.2s; }
+  a.link-card:hover { border-color: #60a5fa; background: #16213e; }
+  .link-icon { font-size: 1.3rem; margin-bottom: 4px; }
+  .link-title { font-size: 0.9rem; font-weight: 600; color: #e0e0e0; }
+  .link-desc  { font-size: 0.75rem; color: #64748b; margin-top: 2px; }
+  .tasks { background: #1e1e2e; border: 1px solid #2a2a4a; border-radius: 10px;
+           padding: 16px; margin-bottom: 28px; }
+  .task-row { display: flex; align-items: center; gap: 10px; padding: 8px 0;
+              border-bottom: 1px solid #16213e; }
+  .task-row:last-child { border-bottom: none; }
+  .task-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .dot-green  { background: #4ade80; }
+  .dot-yellow { background: #fbbf24; }
+  .dot-red    { background: #f87171; }
+  .task-name  { font-size: 0.85rem; font-weight: 600; }
+  .task-desc  { font-size: 0.75rem; color: #64748b; }
+  .footer { color: #374151; font-size: 0.75rem; text-align: center; }
+  .footer a { color: #4b5563; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🧹 Data Cleaning Pipeline</h1>
+  <p class="tagline">An RL environment where agents learn to clean real-world datasets · Built with OpenEnv</p>
+
+  <div class="badges">
+    <span class="badge badge-blue">OpenEnv Compatible</span>
+    <span class="badge badge-green">3 Tasks · Easy → Hard</span>
+    <span class="badge badge-yellow">Dense Rewards</span>
+  </div>
+
+  <p class="section-title">🔗 Endpoints</p>
+  <div class="links">
+    <a class="link-card" href="/web">
+      <div class="link-icon">🎮</div>
+      <div class="link-title">Interactive UI</div>
+      <div class="link-desc">Try the environment live in your browser</div>
+    </a>
+    <a class="link-card" href="/docs">
+      <div class="link-icon">📖</div>
+      <div class="link-title">API Docs</div>
+      <div class="link-desc">Swagger UI with all 9 endpoints</div>
+    </a>
+    <a class="link-card" href="/tasks">
+      <div class="link-icon">📋</div>
+      <div class="link-title">Tasks + Schema</div>
+      <div class="link-desc">All tasks with action schema JSON</div>
+    </a>
+    <a class="link-card" href="/health">
+      <div class="link-icon">💚</div>
+      <div class="link-title">Health Check</div>
+      <div class="link-desc">Server status and active sessions</div>
+    </a>
+    <a class="link-card" href="https://github.com/grevanth1105/OpenEnv-Data-Cleaning-Pipeline" target="_blank">
+      <div class="link-icon">💻</div>
+      <div class="link-title">GitHub</div>
+      <div class="link-desc">Source code and documentation</div>
+    </a>
+    <a class="link-card" href="https://colab.research.google.com/github/grevanth1105/OpenEnv-Data-Cleaning-Pipeline/blob/main/training_demo.ipynb" target="_blank">
+      <div class="link-icon">🚀</div>
+      <div class="link-title">GRPO Training Demo</div>
+      <div class="link-desc">Train an LLM to clean data with RL</div>
+    </a>
+  </div>
+
+  <p class="section-title">🎯 Tasks</p>
+  <div class="tasks">
+    <div class="task-row">
+      <div class="task-dot dot-green"></div>
+      <div>
+        <div class="task-name">Missing Value Imputation <span style="color:#4b5563">· Easy</span></div>
+        <div class="task-desc">Titanic passengers · 4 columns with nulls · impute with mean/median/mode</div>
+      </div>
+    </div>
+    <div class="task-row">
+      <div class="task-dot dot-yellow"></div>
+      <div>
+        <div class="task-name">Type Errors + Outliers <span style="color:#4b5563">· Medium</span></div>
+        <div class="task-desc">Sales transactions · string prices, mixed dates, outlier discounts</div>
+      </div>
+    </div>
+    <div class="task-row">
+      <div class="task-dot dot-red"></div>
+      <div>
+        <div class="task-name">Schema Normalization + Dedup <span style="color:#4b5563">· Hard</span></div>
+        <div class="task-desc">CRM customers · 25 duplicates, 5 format variants, NULL representations</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="footer">
+    Built for the <a href="https://pytorch.org/event/openenv-ai-hackathon/" target="_blank">Meta × HuggingFace × PyTorch OpenEnv Hackathon</a>
+    · <a href="https://github.com/meta-pytorch/OpenEnv" target="_blank">OpenEnv Framework</a>
+  </p>
+</div>
+</body>
+</html>"""
+
+
 @app.get("/web", response_class=HTMLResponse)
 def web_ui():
     """Interactive web UI for testing the environment manually."""
