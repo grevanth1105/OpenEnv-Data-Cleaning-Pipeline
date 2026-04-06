@@ -219,6 +219,11 @@ _ROOT_HTML = """<!DOCTYPE html>
       </div>
     </div>
   </div>
+
+  <p class="footer">
+    Built for the <a href="https://pytorch.org/event/openenv-ai-hackathon/" target="_blank">Meta × HuggingFace × PyTorch OpenEnv Hackathon</a>
+    · <a href="https://github.com/meta-pytorch/OpenEnv" target="_blank">OpenEnv Framework</a>
+  </p>
 </div>
 </body>
 </html>"""
@@ -281,7 +286,7 @@ _WEB_UI_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>Data Cleaning Pipeline — OpenEnv</h1>
+<h1>🧹 Data Cleaning Pipeline — OpenEnv</h1>
 <p class="subtitle">Interactive dashboard · <span class="ws-dot ws-off" id="ws-dot"></span><span id="ws-status">Connecting...</span></p>
 
 <div class="grid">
@@ -817,12 +822,17 @@ def _safe_dict(d: Any) -> Any:
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry point for openenv / pyproject.toml [project.scripts]."""
     import uvicorn
     uvicorn.run(
-        "app:app",
-        host = os.getenv("HOST", "0.0.0.0"),
-        port = int(os.getenv("PORT", 8000)),
+        "server.app:app",
+        host    = os.getenv("HOST", "0.0.0.0"),
+        port    = int(os.getenv("PORT", 8000)),
         workers = int(os.getenv("WORKERS", 1)),
-        reload = False,
+        reload  = False,
     )
+
+
+if __name__ == "__main__":
+    main()

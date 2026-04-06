@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import textwrap
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -125,13 +126,29 @@ class DataCleaningHTTPEnv:
         return resp.json()
 
     def step(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        resp = self._session.post(
-            f"{self.base_url}/step",
-            json={"action": action, "session_id": self.session_id},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        """Execute action with retry on transient errors."""
+        for attempt in range(2):
+            try:
+                resp = self._session.post(
+                    f"{self.base_url}/step",
+                    json={"action": action, "session_id": self.session_id},
+                    timeout=45,
+                )
+                if resp.status_code == 400:
+                    detail = resp.json().get("detail", "")
+                    # Session expired — not retriable
+                    raise requests.exceptions.HTTPError(
+                        f"HTTP 400: {detail}", response=resp
+                    )
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.HTTPError:
+                raise
+            except requests.exceptions.Timeout:
+                if attempt == 0:
+                    continue
+                raise
+        raise RuntimeError("step() failed after retries")
 
     def grader(self) -> Dict[str, Any]:
         resp = self._session.post(
@@ -275,10 +292,15 @@ async def run_task(
                 reward  = float(result.get("reward", 0.0))
                 done    = bool(result.get("done", False))
                 error   = None
+            except requests.exceptions.HTTPError as exc:
+                # 400 = episode already done or invalid action — end gracefully
+                reward = 0.0
+                done   = True
+                error  = f"HTTP {exc.response.status_code}"
             except Exception as exc:
-                reward  = 0.0
-                done    = True
-                error   = str(exc)[:80]
+                reward = 0.0
+                done   = True
+                error  = str(exc)[:80]
 
             rewards.append(reward)
             steps_taken = step
@@ -292,6 +314,8 @@ async def run_task(
 
             if done:
                 break
+
+            time.sleep(0.5)  # small pause to avoid HF Space rate limiting
 
         # Final grader score (0–1) — more accurate than step-reward sum
         try:
@@ -335,7 +359,7 @@ async def main() -> None:
         return
 
     for task in TASKS:
-        env = DataCleaningHTTPEnv(base_url=SPACE_URL)
+        env = DataCleaningHTTPEnv(base_url=SPACE_URL)  # fresh session per task
         try:
             await run_task(
                 client    = client,

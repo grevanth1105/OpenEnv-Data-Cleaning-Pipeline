@@ -1,16 +1,19 @@
 # Web framework
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
-websockets==13.0
+websockets>=15.0.1
 pydantic==2.8.2
 
 # Data
 pandas==2.2.2
 numpy==1.26.4
 
-# HTTP client (used by client.py and baseline.py)
+# HTTP client
 requests==2.32.3
-openai==1.40.0
+openai>=2.7.2
 
-# YAML parsing (openenv.yaml)
+# YAML parsing
 pyyaml==6.0.2
+
+# OpenEnv spec compliance
+openenv-core>=0.2.0
