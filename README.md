@@ -1,6 +1,5 @@
 ---
 title: Data Cleaning Pipeline OpenEnv
-emoji: 🧹
 colorFrom: blue
 colorTo: green
 sdk: docker
