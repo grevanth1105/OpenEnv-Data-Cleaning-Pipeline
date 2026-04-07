@@ -23,12 +23,14 @@ from typing import Any, Dict, List, Optional
 import requests
 import websockets
 from openai import OpenAI
-
+from dotenv import load_dotenv
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+load_dotenv()
+
+API_KEY      = os.getenv("HF_TOKEN")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME   = os.getenv("MODEL_NAME")   or "Qwen/Qwen2.5-72B-Instruct"
 SPACE_URL    = os.getenv("SPACE_URL")    or "https://revanth11-data-cleaning-env.hf.space"

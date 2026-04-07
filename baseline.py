@@ -26,7 +26,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
-
+from dotenv import load_dotenv
 from environment import DataCleaningEnvironment, TASK_NAMES
 from models import DataCleaningAction, DataCleaningObservation
 
@@ -242,8 +242,8 @@ def main() -> None:
         base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         print(f"  Using : OpenAI API")
     else:
-        # HuggingFace Router — uses HF_TOKEN, no OpenAI key needed
-        api_key = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
+        load_dotenv()
+        api_key = os.getenv("HF_TOKEN")
         if not api_key:
             print("❌ HF_TOKEN not set.")
             print("   Get yours at: https://huggingface.co/settings/tokens")
