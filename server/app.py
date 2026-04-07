@@ -573,10 +573,15 @@ async function doGrader() {
 
 
 @app.post("/reset")
-def reset(req: ResetRequest):
-    env = _get_or_create(req.session_id)
+def reset(req: Optional[ResetRequest] = None):
+    session_id = req.session_id if req else "default"
+    task_name  = req.task_name if req else "missing_value_imputation"
+    seed       = req.seed if req else 42
+
+    env = _get_or_create(session_id)
+
     try:
-        obs = env.reset(task_name=req.task_name, seed=req.seed)
+        obs = env.reset(task_name=task_name, seed=seed)
         return obs.dict()
     except ValueError as e:
         raise HTTPException(400, str(e))
