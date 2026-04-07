@@ -272,7 +272,8 @@ async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int) ->
         try:
             grader = await env.grader()
             score  = float(grader.get("score", 0.0))
-            score  = min(max(score, 0.0), 1.0)
+            eps = 1e-6
+            score = min(max(score, eps), 1 - eps)
         except Exception:
             max_total = max_steps * 0.25
             score = min(sum(rewards) / max_total, 1.0) if max_total > 0 else 0.0

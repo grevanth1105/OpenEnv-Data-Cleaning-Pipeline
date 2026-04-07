@@ -27,12 +27,12 @@ def grade_task1(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
 
     for col, weight in weights.items():
         if col not in df.columns:
-            scores[col] = 0.0
+            scores[col] = 1e-6
             continue
 
         null_remaining = int(df[col].isna().sum())
         if null_remaining > 0:
-            scores[col] = 0.0
+            scores[col] = 1e-6
             continue
 
         gt       = ground_truth[col]
@@ -56,7 +56,10 @@ def grade_task1(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
         else:
             scores[col] = weight * 0.75
 
-    total = round(sum(scores.values()), 4)
+    eps = 1e-6
+    total = sum(scores.values())
+    total = max(eps, min(1 - eps, total))
+    total = round(total, 4)
     return total, {"per_column": scores, "task": "missing_value_imputation"}
 
 
@@ -256,7 +259,8 @@ def grade(task_name: str, df: pd.DataFrame, ground_truth: Dict) -> Dict[str, Any
         raise ValueError(f"Unknown task: {task_name}")
 
     score, breakdown = GRADERS[task_name](df, ground_truth)
-    score = float(np.clip(score, 0.0, 1.0))
+    eps = 1e-6
+    score = float(np.clip(score, eps, 1 - eps))
 
     return {
         "task_name": task_name,
