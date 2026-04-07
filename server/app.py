@@ -219,11 +219,6 @@ _ROOT_HTML = """<!DOCTYPE html>
       </div>
     </div>
   </div>
-
-  <p class="footer">
-    Built for the <a href="https://pytorch.org/event/openenv-ai-hackathon/" target="_blank">Meta × HuggingFace × PyTorch OpenEnv Hackathon</a>
-    · <a href="https://github.com/meta-pytorch/OpenEnv" target="_blank">OpenEnv Framework</a>
-  </p>
 </div>
 </body>
 </html>"""
@@ -286,7 +281,7 @@ _WEB_UI_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>🧹 Data Cleaning Pipeline — OpenEnv</h1>
+<h1>Data Cleaning Pipeline — OpenEnv</h1>
 <p class="subtitle">Interactive dashboard · <span class="ws-dot ws-off" id="ws-dot"></span><span id="ws-status">Connecting...</span></p>
 
 <div class="grid">
