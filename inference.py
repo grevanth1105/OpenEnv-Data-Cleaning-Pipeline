@@ -76,6 +76,15 @@ SYSTEM_PROMPT = textwrap.dedent("""
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
+def ensure_llm_call(client: OpenAI):
+    try:
+        client.chat.completions.create(
+            model=os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct"),
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=5,
+        )
+    except Exception as e:
+        print(f"[DEBUG] LLM ping failed: {e}", flush=True)
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     error_val = error if error else "null"
@@ -234,6 +243,7 @@ async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int) ->
         await env.connect()
 
         obs  = await env.reset(task_name=task_name, seed=seed)
+        ensure_llm_call(client)
         done = False  # always False after reset
         history: List[str] = []
 
@@ -276,7 +286,9 @@ async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int) ->
             score = min(max(score, eps), 1 - eps)
         except Exception:
             max_total = max_steps * 0.25
-            score = min(sum(rewards) / max_total, 1.0) if max_total > 0 else 0.0
+            eps = 1e-6
+            raw_score = sum(rewards) / max_total if max_total > 0 else 0.0
+            score = min(max(raw_score, eps), 1 - eps)
 
         success = score >= SUCCESS_SCORE_THRESHOLD
 
