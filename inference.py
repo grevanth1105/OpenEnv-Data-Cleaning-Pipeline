@@ -23,14 +23,12 @@ from typing import Any, Dict, List, Optional
 import requests
 import websockets
 from openai import OpenAI
-from dotenv import load_dotenv
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-load_dotenv()
-
-API_KEY      = os.getenv("HF_TOKEN")
+API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME   = os.getenv("MODEL_NAME")   or "Qwen/Qwen2.5-72B-Instruct"
 SPACE_URL    = os.getenv("SPACE_URL")    or "https://revanth11-data-cleaning-env.hf.space"
@@ -76,15 +74,6 @@ SYSTEM_PROMPT = textwrap.dedent("""
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
-def ensure_llm_call(client: OpenAI):
-    try:
-        client.chat.completions.create(
-            model=os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct"),
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=5,
-        )
-    except Exception as e:
-        print(f"[DEBUG] LLM ping failed: {e}", flush=True)
 
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     error_val = error if error else "null"
@@ -234,7 +223,7 @@ async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int) ->
 
     rewards: List[float] = []
     steps_taken = 0
-    score   = 0.0
+    score   = 0.001  # strictly > 0 even on failure
     success = False
 
     env = DataCleaningWSEnv(base_url=SPACE_URL)
@@ -243,7 +232,6 @@ async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int) ->
         await env.connect()
 
         obs  = await env.reset(task_name=task_name, seed=seed)
-        ensure_llm_call(client)
         done = False  # always False after reset
         history: List[str] = []
 
@@ -278,17 +266,14 @@ async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int) ->
             if done:
                 break
 
-        # Get final grader score
+        # Get final grader score — strictly between 0 and 1 (exclusive)
         try:
             grader = await env.grader()
-            score  = float(grader.get("score", 0.0))
-            eps = 1e-6
-            score = min(max(score, eps), 1 - eps)
+            score  = float(grader.get("score", 0.001))
+            score  = min(max(score, 0.001), 0.999)
         except Exception:
             max_total = max_steps * 0.25
-            eps = 1e-6
-            raw_score = sum(rewards) / max_total if max_total > 0 else 0.0
-            score = min(max(raw_score, eps), 1 - eps)
+            score = min(max(sum(rewards) / max_total, 0.001), 0.999) if max_total > 0 else 0.001
 
         success = score >= SUCCESS_SCORE_THRESHOLD
 
