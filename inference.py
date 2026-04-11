@@ -49,6 +49,8 @@ TASKS = [
     {"name": "missing_value_imputation",   "max_steps": 12, "seed": 42, "difficulty": 0.4},
     {"name": "type_errors_and_outliers",   "max_steps": 18, "seed": 42, "difficulty": 0.5},
     {"name": "schema_normalization_dedup", "max_steps": 22, "seed": 42, "difficulty": 0.6},
+    {"name": "data_type_inference",        "max_steps": 15, "seed": 42, "difficulty": 0.5},
+    {"name": "text_standardization",       "max_steps": 18, "seed": 42, "difficulty": 0.5},
 ]
 
 SYSTEM_PROMPT = textwrap.dedent("""
@@ -93,9 +95,6 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 
-# ---------------------------------------------------------------------------
-# WebSocket environment client — persistent connection, no worker routing issues
-# ---------------------------------------------------------------------------
 
 class DataCleaningWSEnv:
     """
@@ -142,10 +141,6 @@ class DataCleaningWSEnv:
         if self._ws:
             await self._ws.close()
 
-
-# ---------------------------------------------------------------------------
-# LLM helpers
-# ---------------------------------------------------------------------------
 
 def build_user_prompt(obs: Dict, step: int, history: List[str]) -> str:
     issues = obs.get("issues_detected", [])

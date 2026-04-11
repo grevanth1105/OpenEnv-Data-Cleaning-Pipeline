@@ -213,6 +213,102 @@ def _grade_task3(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
 
 
 # ---------------------------------------------------------------------------
+# Task 4 grader — Data Type Inference
+# ---------------------------------------------------------------------------
+
+def _grade_task4(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
+    target_dtypes = ground_truth.get("target_dtypes", {})
+    castable_cols = ground_truth.get("castable_cols", [])
+
+    if not castable_cols:
+        return 0.5, {}
+
+    scores: Dict[str, float] = {}
+    weight = round(1.0 / len(castable_cols), 4)
+
+    for col in castable_cols:
+        if col not in df.columns:
+            scores[col] = 0.0
+            continue
+
+        target = target_dtypes.get(col, "")
+        actual = str(df[col].dtype)
+
+        if target == "float" and pd.api.types.is_float_dtype(df[col]):
+            scores[col] = weight
+        elif target == "int" and (pd.api.types.is_integer_dtype(df[col]) or
+                                  str(df[col].dtype) == "Int64"):
+            scores[col] = weight
+        elif target == "bool" and df[col].dtype == bool:
+            scores[col] = weight
+        elif target == "datetime" and pd.api.types.is_datetime64_any_dtype(df[col]):
+            valid_pct   = df[col].notna().mean()
+            scores[col] = round(weight * valid_pct, 4)
+        elif target in ("float", "int") and pd.api.types.is_numeric_dtype(df[col]):
+            # partial credit for numeric but wrong sub-type
+            scores[col] = round(weight * 0.7, 4)
+        else:
+            scores[col] = 0.0
+
+    total = round(sum(scores.values()), 4)
+    return total, {"per_column": scores}
+
+
+# ---------------------------------------------------------------------------
+# Task 5 grader — Text Standardization
+# ---------------------------------------------------------------------------
+
+def _grade_task5(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
+    import re as _re
+    scores: Dict[str, float] = {}
+
+    valid_phone_pattern = ground_truth.get("valid_phone_pattern", r"^\+91-\d{5}-\d{6}$")
+    valid_email_domains = ground_truth.get("valid_email_domains", ["gmail.com","yahoo.com","outlook.com"])
+    valid_cities        = ground_truth.get("valid_cities", [])
+    valid_countries     = ground_truth.get("valid_countries", [])
+
+    # 1. Phone standardization (weight 0.30)
+    scores["phone"] = 0.0
+    if "phone" in df.columns:
+        valid_phones = df["phone"].apply(
+            lambda p: bool(_re.match(valid_phone_pattern, str(p).strip()))
+        ).mean()
+        scores["phone"] = round(0.30 * valid_phones, 4)
+
+    # 2. Email domain correction (weight 0.25)
+    scores["email"] = 0.0
+    if "email" in df.columns:
+        valid_emails = df["email"].apply(
+            lambda e: any(str(e).strip().endswith(d) for d in valid_email_domains)
+        ).mean()
+        scores["email"] = round(0.25 * valid_emails, 4)
+
+    # 3. Name casing (weight 0.15)
+    scores["full_name"] = 0.0
+    if "full_name" in df.columns:
+        def is_title(n):
+            n = str(n).strip()
+            return n == " ".join(w.capitalize() for w in n.split()) and "," not in n
+        pct_correct = df["full_name"].apply(is_title).mean()
+        scores["full_name"] = round(0.15 * pct_correct, 4)
+
+    # 4. City standardization (weight 0.15)
+    scores["city"] = 0.0
+    if "city" in df.columns and valid_cities:
+        pct_valid = df["city"].isin(valid_cities).mean()
+        scores["city"] = round(0.15 * pct_valid, 4)
+
+    # 5. Country standardization (weight 0.15)
+    scores["country"] = 0.0
+    if "country" in df.columns and valid_countries:
+        pct_valid = df["country"].isin(valid_countries).mean()
+        scores["country"] = round(0.15 * pct_valid, 4)
+
+    total = round(sum(scores.values()), 4)
+    return total, {"per_column": scores}
+
+
+# ---------------------------------------------------------------------------
 # Feedback
 # ---------------------------------------------------------------------------
 
@@ -228,10 +324,20 @@ def _feedback(score: float) -> str:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+TASK_NAMES = [
+    "missing_value_imputation",
+    "type_errors_and_outliers",
+    "schema_normalization_dedup",
+    "data_type_inference",
+    "text_standardization",
+]
+
 GRADERS = {
     "missing_value_imputation":   _grade_task1,
     "type_errors_and_outliers":   _grade_task2,
     "schema_normalization_dedup": _grade_task3,
+    "data_type_inference":        _grade_task4,
+    "text_standardization":       _grade_task5,
 }
 
 
