@@ -183,25 +183,19 @@ class DataCleaningObservation(BaseModel):
 class DataCleaningState(BaseModel):
     """
     Full episode state — returned by state() endpoint.
-    Includes everything in Observation plus internal bookkeeping.
     """
-    episode_id        : str
-    task_name         : str
-    task_difficulty   : TaskDifficulty
+    task_name         : str                  = "missing_value_imputation"
+    task_description  : str                  = ""
+    task_difficulty   : str                  = "medium"
+    seed              : int                  = 42
+    difficulty        : float                = 0.5
     step_count        : int                  = 0
     max_steps         : int                  = 20
     cumulative_reward : float                = 0.0
     done              : bool                 = False
-
-    # Issue tracking
-    initial_issue_count  : int              = 0
-    resolved_issue_count : int              = 0
-    remaining_issue_count: int              = 0
-
-    # Grader score (available after done=True)
-    grader_score      : Optional[float]     = Field(None, ge=0.0, le=1.0)
-
-    metadata          : Dict[str, Any]      = Field(default_factory=dict)
+    grader_score      : float                = 0.0
+    action_history    : List[str]            = Field(default_factory=list)
+    metadata          : Dict[str, Any]       = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
