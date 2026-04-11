@@ -10,7 +10,7 @@ MANDATORY ENVIRONMENT VARIABLES:
 STDOUT FORMAT:
     [START] task=<task> env=<benchmark> model=<model>
     [STEP]  step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
-    [END]   success=<true|false> steps=<n> score=<0.000> rewards=<r1,r2,...>
+    [END]   success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
 """
 
 import asyncio
@@ -24,8 +24,15 @@ import requests
 import websockets
 from openai import OpenAI
 
+# Load variables from .env file if it exists (python-dotenv)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed — fall back to system env vars
+
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration — reads from .env file or system environment variables
 # ---------------------------------------------------------------------------
 
 API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
@@ -39,9 +46,9 @@ MAX_TOKENS             = 200
 SUCCESS_SCORE_THRESHOLD = 0.5
 
 TASKS = [
-    {"name": "missing_value_imputation",   "max_steps": 12, "seed": 42},
-    {"name": "type_errors_and_outliers",   "max_steps": 18, "seed": 42},
-    {"name": "schema_normalization_dedup", "max_steps": 22, "seed": 42},
+    {"name": "missing_value_imputation",   "max_steps": 12, "seed": 42, "difficulty": 0.4},
+    {"name": "type_errors_and_outliers",   "max_steps": 18, "seed": 42, "difficulty": 0.5},
+    {"name": "schema_normalization_dedup", "max_steps": 22, "seed": 42, "difficulty": 0.6},
 ]
 
 SYSTEM_PROMPT = textwrap.dedent("""
@@ -115,8 +122,8 @@ class DataCleaningWSEnv:
         raw = await asyncio.wait_for(self._ws.recv(), timeout=45)
         return json.loads(raw)
 
-    async def reset(self, task_name: str, seed: int = 42) -> Dict:
-        resp = await self._send({"type": "reset", "task_name": task_name, "seed": seed})
+    async def reset(self, task_name: str, seed: int = 42, difficulty: float = 0.5) -> Dict:
+        resp = await self._send({"type": "reset", "task_name": task_name, "seed": seed, "difficulty": difficulty})
         return resp.get("observation", {})
 
     async def step(self, action: Dict) -> Dict:
@@ -218,12 +225,12 @@ def get_model_action(client: OpenAI, obs: Dict, step: int, history: List[str]) -
 # Single task episode
 # ---------------------------------------------------------------------------
 
-async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int) -> None:
+async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int, difficulty: float = 0.5) -> None:
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
     rewards: List[float] = []
     steps_taken = 0
-    score   = 0.001  # strictly > 0 even on failure
+    score   = 0.001
     success = False
 
     env = DataCleaningWSEnv(base_url=SPACE_URL)
@@ -231,11 +238,11 @@ async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int) ->
     try:
         await env.connect()
 
-        obs  = await env.reset(task_name=task_name, seed=seed)
-        done = False  # always False after reset
+        obs  = await env.reset(task_name=task_name, seed=seed, difficulty=difficulty)
+        done = False
         history: List[str] = []
 
-        print(f"[DEBUG] reset ok | rows={obs.get('total_rows')} issues={obs.get('issues_remaining')}", flush=True)
+        print(f"[DEBUG] reset ok | rows={obs.get('total_rows')} issues={obs.get('issues_remaining')} diff={difficulty}", flush=True)
 
         for step in range(1, max_steps + 1):
             if done:
@@ -319,6 +326,7 @@ async def main() -> None:
             task_name = task["name"],
             max_steps = task["max_steps"],
             seed      = task["seed"],
+            difficulty = task.get("difficulty", 0.5),
         )
         print(flush=True)
 

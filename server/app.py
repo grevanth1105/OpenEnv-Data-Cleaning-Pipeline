@@ -73,23 +73,32 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 
 class ResetRequest(BaseModel):
-    task_name: str = "missing_value_imputation"
-    seed: int = 42
-    session_id: str = "default"
+    task_name:  str   = "missing_value_imputation"
+    seed:       int   = 42
+    difficulty: float = 0.5
+    session_id: str   = "default"
+
+    model_config = {"extra": "ignore"}
 
 
 class StepRequest(BaseModel):
-    action: Dict[str, Any]
+    action:     Dict[str, Any] = {}
     session_id: str = "default"
+
+    model_config = {"extra": "ignore"}
 
 
 class GraderRequest(BaseModel):
     session_id: str = "default"
 
+    model_config = {"extra": "ignore"}
+
 
 class BaselineRequest(BaseModel):
-    model: str = "gpt-4o-mini"
-    seed: int = 42
+    model:      str = "gpt-4o-mini"
+    seed:       int = 42
+
+    model_config = {"extra": "ignore"}
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +228,11 @@ _ROOT_HTML = """<!DOCTYPE html>
       </div>
     </div>
   </div>
+
+  <p class="footer">
+    Built for the <a href="https://pytorch.org/event/openenv-ai-hackathon/" target="_blank">Meta × HuggingFace × PyTorch OpenEnv Hackathon</a>
+    · <a href="https://github.com/meta-pytorch/OpenEnv" target="_blank">OpenEnv Framework</a>
+  </p>
 </div>
 </body>
 </html>"""
@@ -281,7 +295,7 @@ _WEB_UI_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>Data Cleaning Pipeline — OpenEnv</h1>
+<h1>🧹 Data Cleaning Pipeline — OpenEnv</h1>
 <p class="subtitle">Interactive dashboard · <span class="ws-dot ws-off" id="ws-dot"></span><span id="ws-status">Connecting...</span></p>
 
 <div class="grid">
@@ -574,14 +588,15 @@ async function doGrader() {
 
 @app.post("/reset")
 def reset(req: Optional[ResetRequest] = None):
-    session_id = req.session_id if req else "default"
-    task_name  = req.task_name if req else "missing_value_imputation"
-    seed       = req.seed if req else 42
-
-    env = _get_or_create(session_id)
-
+    if req is None:
+        req = ResetRequest()
+    env = _get_or_create(req.session_id)
     try:
-        obs = env.reset(task_name=task_name, seed=seed)
+        obs = env.reset(
+            task_name  = req.task_name,
+            seed       = req.seed,
+            difficulty = req.difficulty,
+        )
         return obs.dict()
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -649,9 +664,11 @@ def grader(req: GraderRequest):
     env = _get_or_create(req.session_id)
     try:
         result = env.get_grader_result()
+        # Strictly between 0 and 1 — validator rejects exactly 0.0 or 1.0
+        safe_score = float(min(max(result["score"], 0.001), 0.999))
         return GraderResult(
             task_name = result["task_name"],
-            score     = result["score"],
+            score     = safe_score,
             breakdown = result["breakdown"].get("per_column", {}),
             passed    = result["passed"],
             feedback  = result["feedback"],
@@ -710,7 +727,8 @@ def baseline(req: BaselineRequest):
                     df[col] = df[col].replace(list(NULL_VARIANTS), np.nan)
 
         result             = grade(task_name, df, gt)
-        results[task_name] = round(result["score"], 4)
+        # Strictly between 0 and 1 — validator rejects exactly 0.0 or 1.0
+        results[task_name] = float(min(max(round(result["score"], 4), 0.001), 0.999))
 
     mean_score = round(sum(results.values()) / len(results), 4)
 
@@ -739,8 +757,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if msg_type == "reset":
                 obs = env.reset(
-                    task_name = data.get("task_name", "missing_value_imputation"),
-                    seed      = data.get("seed", 42),
+                    task_name  = data.get("task_name", "missing_value_imputation"),
+                    seed       = data.get("seed", 42),
+                    difficulty = float(data.get("difficulty", 0.5)),
                 )
                 await websocket.send_text(json.dumps({
                     "type":        "observation",
@@ -769,6 +788,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif msg_type == "grader":
                 result = env.get_grader_result()
+                # Strictly between 0 and 1 — validator rejects exactly 0.0 or 1.0
+                result["score"] = float(min(max(result["score"], 0.001), 0.999))
                 await websocket.send_text(json.dumps({
                     "type":   "grader",
                     "result": result,

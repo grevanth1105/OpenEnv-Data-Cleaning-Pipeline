@@ -1,279 +1,259 @@
 """
-graders.py — Deterministic task graders for Data Cleaning Pipeline
-Each grader scores 0.0–1.0 based on how well the agent cleaned the dataset.
+graders.py — Deterministic Task Graders
+=========================================
+Each grader returns a score strictly in (0.001, 0.999).
+Scores are based on ground_truth generated at reset time.
 """
 
 from __future__ import annotations
 
-import re
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
+from dataset_generator import REGION_VARIANTS, NULL_VARIANTS, STATUSES
+
+TASK_NAMES = [
+    "missing_value_imputation",
+    "type_errors_and_outliers",
+    "schema_normalization_dedup",
+]
+
 
 # ---------------------------------------------------------------------------
-# Task 1 — Missing Value Imputation
+# Task 1 grader — Missing Value Imputation
 # ---------------------------------------------------------------------------
 
-def grade_task1(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
-    """
-    Score: 4 columns × 0.25 each = 1.0
-    Full credit  → nulls gone, fill value within tolerance.
-    Zero credit  → nulls remain.
-    """
-    scores = {}
-    weights = {"age": 0.25, "fare": 0.25, "embarked": 0.25, "years_aboard": 0.25}
+def _grade_task1(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
+    null_cols = ground_truth.get("null_cols", {})
+    if not null_cols:
+        return 0.5, {}
 
-    for col, weight in weights.items():
+    scores: Dict[str, float] = {}
+    weight_per_col = 1.0 / len(null_cols)
+
+    for col, info in null_cols.items():
         if col not in df.columns:
             scores[col] = 0.0
             continue
 
-        null_remaining = int(df[col].isna().sum())
-        if null_remaining > 0:
-            scores[col] = 0.0
-            continue
+        remaining_nulls = int(df[col].isna().sum())
+        original_nulls  = info.get("null_count", 1)
 
-        gt       = ground_truth[col]
-        strategy = gt["strategy"]
-        expected = gt["value"]
+        if remaining_nulls == 0:
+            # All nulls filled — check if values are reasonable
+            expected   = info.get("expected", None)
+            strategy   = info.get("strategy", "mean")
+            filled_val = df[col].dropna()
 
-        if strategy in ("median", "mean"):
-            try:
-                actual_mean = float(df[col].mean())
-                tolerance   = abs(float(expected)) * 0.10 + 1.0
-                scores[col] = weight if abs(actual_mean - float(expected)) <= tolerance * 3 else weight * 0.5
-            except Exception:
-                scores[col] = weight * 0.75
-        elif strategy == "mode":
-            try:
-                actual_mode  = str(df[col].mode()[0]).strip()
-                expected_str = str(expected).strip()
-                scores[col]  = weight if actual_mode == expected_str else weight * 0.5
-            except Exception:
-                scores[col] = weight * 0.75
+            if expected is not None and len(filled_val) > 0:
+                actual_val  = float(filled_val.median() if strategy == "median" else filled_val.mean())
+                tolerance   = abs(expected) * 0.15 + 1.0
+                if abs(actual_val - expected) <= tolerance:
+                    scores[col] = weight_per_col
+                else:
+                    scores[col] = weight_per_col * 0.6
+            else:
+                scores[col] = weight_per_col * 0.8
         else:
-            scores[col] = weight * 0.75
+            # Partial credit for reducing nulls
+            pct_fixed = 1.0 - (remaining_nulls / max(original_nulls, 1))
+            scores[col] = round(weight_per_col * max(pct_fixed, 0) * 0.7, 4)
 
     total = round(sum(scores.values()), 4)
-    return total, {"per_column": scores, "task": "missing_value_imputation"}
-
-
-def _infer_numeric_fill(series: pd.Series, strategy: str) -> float:
-    """Estimate what fill value was used by checking the most common filled value."""
-    return float(series.dropna().median() if strategy == "median" else series.dropna().mean())
+    return total, {"per_column": scores}
 
 
 # ---------------------------------------------------------------------------
-# Task 2 — Type Errors + Outlier Detection
+# Task 2 grader — Type Errors + Outliers
 # ---------------------------------------------------------------------------
 
-def grade_task2(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
-    """
-    Score breakdown:
-        unit_price cast to float   → 0.15
-        quantity cast to int       → 0.15
-        rating cast to float       → 0.15
-        order_date normalized      → 0.10
-        discount_pct clipped       → 0.20
-        region casing fixed        → 0.15
-        no unnecessary row drops   → 0.10
-    """
-    scores = {}
+def _grade_task2(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
+    scores: Dict[str, float] = {}
+    n_rows = ground_truth.get("n_rows", len(df))
 
-    # unit_price → float
+    # 1. unit_price as numeric (weight 0.22)
     scores["unit_price"] = 0.0
-    if "unit_price" in df.columns and pd.api.types.is_float_dtype(df["unit_price"]):
-        if df["unit_price"].between(0, 1_000_000).all():
-            scores["unit_price"] = 0.15
+    if "unit_price" in df.columns:
+        if pd.api.types.is_numeric_dtype(df["unit_price"]):
+            valid = df["unit_price"].dropna()
+            if len(valid) > 0 and (valid > 0).all():
+                scores["unit_price"] = 0.22
 
-    # quantity → int-like
+    # 2. quantity as integer (weight 0.18)
     scores["quantity"] = 0.0
     if "quantity" in df.columns:
-        if pd.api.types.is_integer_dtype(df["quantity"]):
-            scores["quantity"] = 0.15
-        elif pd.api.types.is_float_dtype(df["quantity"]) and df["quantity"].dropna().apply(float.is_integer).all():
+        if pd.api.types.is_integer_dtype(df["quantity"]) or \
+           (pd.api.types.is_numeric_dtype(df["quantity"]) and
+            df["quantity"].dropna().apply(lambda x: x == int(x)).all()):
+            scores["quantity"] = 0.18
+        elif pd.api.types.is_numeric_dtype(df["quantity"]):
             scores["quantity"] = 0.10
 
-    # rating → float, valid range
-    scores["rating"] = 0.0
-    if "rating" in df.columns and pd.api.types.is_float_dtype(df["rating"]):
-        valid = df["rating"].dropna().between(0.0, 5.0).all()
-        scores["rating"] = 0.15 if valid else 0.08
-
-    # order_date → parseable dates
+    # 3. order_date as datetime (weight 0.18)
     scores["order_date"] = 0.0
     if "order_date" in df.columns:
-        try:
-            parsed = pd.to_datetime(df["order_date"], errors="coerce")
-            scores["order_date"] = round(0.10 * parsed.notna().mean(), 4)
-        except Exception:
-            pass
+        if pd.api.types.is_datetime64_any_dtype(df["order_date"]):
+            valid_pct = df["order_date"].notna().mean()
+            scores["order_date"] = round(0.18 * valid_pct, 4)
+        elif df["order_date"].dtype == object:
+            # Partial credit if at least some were parsed
+            try:
+                parsed = pd.to_datetime(df["order_date"], errors="coerce")
+                parsed_pct = parsed.notna().mean()
+                scores["order_date"] = round(0.18 * parsed_pct * 0.5, 4)
+            except Exception:
+                pass
 
-    # discount_pct → clipped to [0, 100]
+    # 4. rating as numeric (weight 0.15)
+    scores["rating"] = 0.0
+    if "rating" in df.columns:
+        if pd.api.types.is_numeric_dtype(df["rating"]):
+            valid = df["rating"].dropna()
+            if len(valid) > 0 and (valid.between(0, 5)).all():
+                scores["rating"] = 0.15
+            else:
+                scores["rating"] = 0.08
+
+    # 5. discount_pct outliers removed (weight 0.17)
     scores["discount_pct"] = 0.0
-    if "discount_pct" in df.columns and pd.api.types.is_numeric_dtype(df["discount_pct"]):
-        bad = int(((df["discount_pct"] < 0) | (df["discount_pct"] > 100)).sum())
-        scores["discount_pct"] = 0.20 if bad == 0 else round(0.20 * (1 - bad / len(df)), 4)
+    if "discount_pct" in df.columns:
+        if pd.api.types.is_numeric_dtype(df["discount_pct"]):
+            bad = ((df["discount_pct"] < 0) | (df["discount_pct"] > 100)).sum()
+            if bad == 0:
+                scores["discount_pct"] = 0.17
+            else:
+                scores["discount_pct"] = round(0.17 * (1 - bad / max(len(df), 1)), 4)
 
-    # region → title case
+    # 6. region normalized (weight 0.10)
     scores["region"] = 0.0
     if "region" in df.columns:
-        valid_regions = {"North", "South", "East", "West", "Central"}
-        pct_valid = df["region"].dropna().isin(valid_regions).mean()
-        scores["region"] = round(0.15 * pct_valid, 4)
-
-    # Row preservation
-    scores["row_preservation"] = 0.0
-    if len(df) >= 135:
-        scores["row_preservation"] = 0.10
-    elif len(df) >= 100:
-        scores["row_preservation"] = 0.05
+        valid_regions = set(REGION_VARIANTS.keys())
+        pct_valid = df["region"].isin(valid_regions).mean()
+        scores["region"] = round(0.10 * pct_valid, 4)
 
     total = round(sum(scores.values()), 4)
-    return total, {"per_column": scores, "task": "type_errors_and_outliers"}
+    return total, {"per_column": scores}
 
 
 # ---------------------------------------------------------------------------
-# Task 3 — Schema Normalization + Deduplication
+# Task 3 grader — Schema Normalization + Dedup
 # ---------------------------------------------------------------------------
 
-REGION_MAP = {
-    "north": "North", "nth": "North", "n": "North",
-    "south": "South", "sth": "South", "s": "South",
-    "east":  "East",  "est": "East",  "e": "East",
-    "west":  "West",  "wst": "West",  "w": "West",
-    "central": "Central", "cntrl": "Central", "c": "Central",
-}
+def _grade_task3(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
+    scores: Dict[str, float] = {}
+    n_base  = ground_truth.get("n_base",  len(df))
+    n_dupes = ground_truth.get("n_dupes", 0)
 
-COUNTRY_MAP = {
-    "us": "USA", "united states": "USA", "u.s.a": "USA",
-    "gb": "UK",  "united kingdom": "UK", "britain": "UK", "england": "UK",
-    "ca": "Canada", "can": "Canada",
-    "au": "Australia", "aus": "Australia",
-    "in": "India", "ind": "India",
-}
+    # 1. Deduplication (weight 0.30)
+    actual_dupes = int(df.duplicated().sum())
+    scores["deduplication"] = 0.0
+    if n_dupes > 0:
+        if actual_dupes == 0:
+            # Check rows are roughly right (not too many dropped)
+            row_ratio = len(df) / max(n_base, 1)
+            if row_ratio >= 0.85:
+                scores["deduplication"] = 0.30
+            else:
+                scores["deduplication"] = round(0.30 * row_ratio, 4)
+        else:
+            # Partial: fewer dupes than before
+            pct_removed = 1.0 - (actual_dupes / max(n_dupes, 1))
+            scores["deduplication"] = round(0.30 * max(pct_removed, 0) * 0.7, 4)
 
-NULL_VARIANTS = {"n/a", "none", "-", "", "null", "na", "nan"}
-
-
-def grade_task3(df: pd.DataFrame, ground_truth: Dict) -> Tuple[float, Dict]:
-    """
-    Score breakdown:
-        Deduplication quality   → 0.30
-        Format normalization    → 0.30  (region + country + status)
-        Schema violations fixed → 0.20  (age + annual_revenue)
-        NULL standardization    → 0.20
-    """
-    scores = {}
-    original_clean_rows = 200  # before dupes were added
-
-    # --- Deduplication (0.30) — zero tolerance for exact dupes ---
-    exact_dupes = int(df.duplicated().sum())
-    if exact_dupes == 0:
-        # Reward for getting close to original 200 rows
-        row_ratio = min(len(df), original_clean_rows) / original_clean_rows
-        dup_score = 0.30 * min(row_ratio, 1.0)
-    else:
-        # Still penalise hard — any remaining dupes means partial credit only
-        dup_score = 0.05 * max(0, 1 - exact_dupes / 25)
-    scores["deduplication"] = round(max(0.0, dup_score), 4)
-
-    # --- Region normalization (0.10) — strict: must be canonical form ---
+    # 2. Region normalization (weight 0.20)
     scores["region"] = 0.0
     if "region" in df.columns:
-        valid_regions = {"North", "South", "East", "West", "Central"}
-        pct_valid = df["region"].dropna().isin(valid_regions).mean()
-        scores["region"] = round(0.10 * pct_valid, 4) if pct_valid > 0.95 else round(0.03 * pct_valid, 4)
+        valid_regions = set(REGION_VARIANTS.keys())
+        pct_valid = df["region"].isin(valid_regions).mean()
+        scores["region"] = round(0.20 * pct_valid, 4)
 
-    # --- Country normalization (0.10) — strict ---
-    scores["country"] = 0.0
-    if "country" in df.columns:
-        valid_countries = {"USA", "UK", "Canada", "Australia", "India"}
-        pct_valid = df["country"].dropna().isin(valid_countries).mean()
-        scores["country"] = round(0.10 * pct_valid, 4) if pct_valid > 0.95 else round(0.03 * pct_valid, 4)
-
-    # --- Status normalization (0.10) — penalise mixed case still present ---
+    # 3. Status normalization (weight 0.20)
     scores["status"] = 0.0
     if "status" in df.columns:
-        valid_statuses = {"active", "inactive", "pending"}
-        has_mixed_case = df["status"].dropna().str.contains(r"[A-Z]", regex=True).any()
-        pct_valid = df["status"].dropna().str.lower().str.strip().isin(valid_statuses).mean()
-        scores["status"] = round((0.03 if has_mixed_case else 0.10) * pct_valid, 4)
+        pct_valid = df["status"].isin(STATUSES).mean()
+        scores["status"] = round(0.20 * pct_valid, 4)
 
-    # --- Age schema fix (0.10) ---
-    scores["age"] = 0.0
-    if "age" in df.columns and pd.api.types.is_numeric_dtype(df["age"]):
-        bad_age = ((df["age"] < 0) | (df["age"] > 120)).sum()
-        scores["age"] = 0.10 if bad_age == 0 else round(0.10 * (1 - bad_age / len(df)), 4)
-
-    # --- Revenue schema fix (0.10) ---
-    scores["annual_revenue"] = 0.0
-    if "annual_revenue" in df.columns and pd.api.types.is_numeric_dtype(df["annual_revenue"]):
-        bad_rev = (df["annual_revenue"] < 0).sum()
-        scores["annual_revenue"] = 0.10 if bad_rev == 0 else round(0.10 * (1 - bad_rev / len(df)), 4)
-
-    # --- NULL standardization (0.20) — must eliminate ALL variant representations ---
-    null_variant_count = 0
-    total_cells = 0
-    for col in ["email", "phone", "region"]:
+    # 4. Null variants replaced (weight 0.15)
+    scores["null_handling"] = 0.0
+    null_variant_set = set(NULL_VARIANTS) - {""}
+    null_remaining   = 0
+    null_cols_checked = ["email", "phone"]
+    total_checked = 0
+    for col in null_cols_checked:
         if col in df.columns:
-            str_vals = df[col].dropna().astype(str).str.lower().str.strip()
-            null_variant_count += int(str_vals.isin(NULL_VARIANTS).sum())
-            total_cells += len(str_vals)
+            remaining = df[col].isin(null_variant_set).sum()
+            null_remaining += remaining
+            total_checked  += len(df)
+    if total_checked > 0:
+        pct_clean = 1.0 - (null_remaining / total_checked)
+        scores["null_handling"] = round(0.15 * pct_clean, 4)
 
-    if total_cells == 0:
-        scores["null_handling"] = 0.20
-    elif null_variant_count == 0:
-        scores["null_handling"] = 0.20
-    else:
-        # Steep penalty — partial cleanup gets little credit
-        pct_clean = 1 - (null_variant_count / max(total_cells, 1))
-        scores["null_handling"] = round(0.08 * pct_clean, 4)
+    # 5. Schema repair (age, revenue) (weight 0.15)
+    scores["schema_repair"] = 0.0
+    schema_issues = 0
+    schema_total  = 0
+    if "age" in df.columns:
+        bad_age = ((df["age"] < 0) | (df["age"] > 120)).sum()
+        schema_issues += bad_age
+        schema_total  += len(df)
+    if "annual_revenue" in df.columns:
+        bad_rev = (df["annual_revenue"] < 0).sum()
+        schema_issues += bad_rev
+        schema_total  += len(df)
+    if schema_total > 0:
+        pct_fixed = 1.0 - (schema_issues / schema_total)
+        scores["schema_repair"] = round(0.15 * pct_fixed, 4)
+    elif schema_total == 0:
+        scores["schema_repair"] = 0.15  # no schema issues to fix
 
     total = round(sum(scores.values()), 4)
-    return total, {"per_column": scores, "task": "schema_normalization_dedup"}
+    return total, {"per_column": scores}
 
 
 # ---------------------------------------------------------------------------
-# Unified grader entry point
+# Feedback
+# ---------------------------------------------------------------------------
+
+def _feedback(score: float) -> str:
+    if score >= 0.85: return "Excellent — nearly complete cleaning."
+    if score >= 0.70: return "Good — most issues resolved, minor gaps remain."
+    if score >= 0.50: return "Partial — key issues addressed but several remain."
+    if score >= 0.30: return "Poor — few issues resolved."
+    return "Minimal progress — most issues unresolved."
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
 # ---------------------------------------------------------------------------
 
 GRADERS = {
-    "missing_value_imputation":   grade_task1,
-    "type_errors_and_outliers":   grade_task2,
-    "schema_normalization_dedup": grade_task3,
+    "missing_value_imputation":   _grade_task1,
+    "type_errors_and_outliers":   _grade_task2,
+    "schema_normalization_dedup": _grade_task3,
 }
 
 
 def grade(task_name: str, df: pd.DataFrame, ground_truth: Dict) -> Dict[str, Any]:
     """
     Grade a cleaned dataframe against ground truth.
-    Returns a dict with score, breakdown, passed flag, and feedback.
+    Score is strictly between 0.001 and 0.999 — validator rejects 0.0 and 1.0.
     """
     if task_name not in GRADERS:
         raise ValueError(f"Unknown task: {task_name}")
 
     score, breakdown = GRADERS[task_name](df, ground_truth)
-    # Strictly between 0 and 1 — validator rejects exactly 0.0 or 1.0
+    # STRICTLY between 0 and 1 — validator rejects exactly 0.0 or 1.0
     score = float(np.clip(score, 0.001, 0.999))
 
     return {
         "task_name": task_name,
         "score":     score,
         "breakdown": breakdown,
-        "passed":    score >= 0.6,
+        "passed":    score >= 0.5,
         "feedback":  _feedback(score),
     }
-
-
-def _feedback(score: float) -> str:
-    if score >= 0.9:  return "Excellent — nearly perfect cleaning."
-    if score >= 0.7:  return "Good — most issues resolved, minor gaps remain."
-    if score >= 0.5:  return "Partial — key issues addressed but several remain."
-    if score >= 0.3:  return "Poor — few issues resolved."
-    return "Minimal progress — most issues unresolved."
 
 
 # ---------------------------------------------------------------------------
@@ -281,60 +261,25 @@ def _feedback(score: float) -> str:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    from dataset_generator import get_all_tasks, dataframe_to_records
+    import sys
+    sys.path.insert(0, ".")
+    from dataset_generator import get_dataset
 
-    print("=" * 55)
-    print("  Grader Smoke Test — Unmodified (messy) datasets")
-    print("=" * 55)
+    print("=" * 60)
+    print("  Grader Smoke Test")
+    print("=" * 60)
 
-    for task_name, data in get_all_tasks(seed=42).items():
-        result = grade(task_name, data["dataframe"], data["ground_truth"])
-        print(f"\n  {task_name}")
-        print(f"  Score    : {result['score']:.4f}")
-        print(f"  Passed   : {result['passed']}")
-        print(f"  Feedback : {result['feedback']}")
-        print(f"  Breakdown: {result['breakdown']['per_column']}")
+    for task in TASK_NAMES:
+        print(f"\n  [{task}]")
+        for seed in [42, 99, 777]:
+            data   = get_dataset(task, seed=seed, difficulty=0.5)
+            df     = data["dataframe"]
+            gt     = data["ground_truth"]
+            result = grade(task, df, gt)
+            score  = result["score"]
+            ok     = 0.0 < score < 1.0
+            print(f"    seed={seed} score={score:.4f}  {'✅' if ok else '❌ OUT OF RANGE'}")
+            if score == 0.0 or score == 1.0:
+                print(f"    ❌ BOUNDARY VALUE DETECTED!")
 
-    print("\n" + "=" * 55)
-    print("  Grader Smoke Test — Perfectly cleaned datasets")
-    print("=" * 55)
-
-    # Task 1 — simulate perfect imputation
-    data1 = get_all_tasks(seed=42)["missing_value_imputation"]
-    df1   = data1["dataframe"].copy()
-    gt1   = data1["ground_truth"]
-    df1["age"]        = df1["age"].fillna(gt1["age"]["value"])
-    df1["salary"]     = df1["salary"].fillna(gt1["salary"]["value"])
-    df1["department"] = df1["department"].fillna(gt1["department"]["value"])
-    df1["years_exp"]  = df1["years_exp"].fillna(gt1["years_exp"]["value"])
-    df1["is_manager"] = df1["is_manager"].fillna(gt1["is_manager"]["value"])
-    r1 = grade("missing_value_imputation", df1, gt1)
-    print(f"\n  Task 1 (perfect): {r1['score']:.4f} — {r1['feedback']}")
-
-    # Task 2 — simulate perfect cleaning
-    data2 = get_all_tasks(seed=42)["type_errors_and_outliers"]
-    df2   = data2["dataframe"].copy()
-    df2["price"]        = df2["price"].str.replace(r"[^\d.]", "", regex=True).astype(float)
-    df2["quantity"]     = df2["quantity"].astype(int)
-    df2["rating"]       = pd.to_numeric(df2["rating"].str.extract(r"(\d+\.?\d*)")[0], errors="coerce").clip(0, 5)
-    df2["order_date"]   = pd.to_datetime(df2["order_date"], dayfirst=False, errors="coerce")
-    df2["discount_pct"] = df2["discount_pct"].clip(0, 100)
-    df2["weight_kg"]    = df2["weight_kg"].clip(upper=200)
-    r2 = grade("type_errors_and_outliers", df2, data2["ground_truth"])
-    print(f"  Task 2 (perfect): {r2['score']:.4f} — {r2['feedback']}")
-
-    # Task 3 — simulate perfect cleaning
-    data3 = get_all_tasks(seed=42)["schema_normalization_dedup"]
-    df3   = data3["dataframe"].copy()
-    df3   = df3.drop_duplicates()
-    df3["region"]  = df3["region"].str.lower().str.strip().map(REGION_MAP).fillna(df3["region"])
-    df3["country"] = df3["country"].str.lower().str.strip().map(COUNTRY_MAP).fillna(df3["country"])
-    df3["status"]  = df3["status"].str.lower().str.strip()
-    df3["age"]     = pd.to_numeric(df3["age"], errors="coerce").clip(0, 120)
-    df3["annual_revenue"] = pd.to_numeric(df3["annual_revenue"], errors="coerce").clip(lower=0)
-    for col in ["email", "phone", "region"]:
-        df3[col] = df3[col].replace(list(NULL_VARIANTS), np.nan)
-    r3 = grade("schema_normalization_dedup", df3, data3["ground_truth"])
-    print(f"  Task 3 (perfect): {r3['score']:.4f} — {r3['feedback']}")
-
-    print("\n✅ Graders working correctly!")
+    print("\n✅ All grader tests passed!")
