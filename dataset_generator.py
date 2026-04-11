@@ -441,7 +441,7 @@ def detect_issues(task_name: str, df: pd.DataFrame, ground_truth: Dict) -> List[
                 n_null = int(df[col].isna().sum())
                 if n_null > 0:
                     issues.append({
-                        "type":        "missing_values",
+                        "issue_type":   "missing_values",
                         "column":      col,
                         "severity":    "high" if info["weight"] >= 0.33 else "medium",
                         "count":       n_null,
@@ -456,72 +456,72 @@ def detect_issues(task_name: str, df: pd.DataFrame, ground_truth: Dict) -> List[
             except Exception:
                 bad = 0
             if bad > 0:
-                issues.append({"type": "type_error", "column": "unit_price", "severity": "high",
+                issues.append({"issue_type": "type_error", "column": "unit_price", "severity": "high",
                                 "count": int(bad), "description": f"unit_price is a string with currency symbol ({bad} rows)"})
         # String quantity
         if "quantity" in df.columns:
             if df["quantity"].dtype == object:
-                issues.append({"type": "type_error", "column": "quantity", "severity": "high",
+                issues.append({"issue_type": "type_error", "column": "quantity", "severity": "high",
                                 "count": int(len(df)), "description": "quantity is stored as string — cast to int"})
         # Mixed dates
         if "order_date" in df.columns and df["order_date"].dtype == object:
-            issues.append({"type": "type_error", "column": "order_date", "severity": "medium",
+            issues.append({"issue_type": "type_error", "column": "order_date", "severity": "medium",
                            "count": int(len(df)), "description": "order_date has mixed format strings — normalize to datetime"})
         # Messy ratings
         if "rating" in df.columns and df["rating"].dtype == object:
-            issues.append({"type": "type_error", "column": "rating", "severity": "medium",
+            issues.append({"issue_type": "type_error", "column": "rating", "severity": "medium",
                            "count": int(len(df)), "description": "rating has text suffixes and nulls — cast to float"})
         # Outliers in discount_pct
         if "discount_pct" in df.columns:
             bad_disc = ((df["discount_pct"] < 0) | (df["discount_pct"] > 100)).sum()
             if bad_disc > 0:
-                issues.append({"type": "outlier", "column": "discount_pct", "severity": "high",
+                issues.append({"issue_type": "outlier", "column": "discount_pct", "severity": "high",
                                 "count": int(bad_disc), "description": f"discount_pct has {bad_disc} values outside [0, 100]"})
         # Region mixed case
         if "region" in df.columns:
             invalid = (~df["region"].str.istitle()).sum() if df["region"].dtype == object else 0
             if invalid > 0:
-                issues.append({"type": "format", "column": "region", "severity": "low",
+                issues.append({"issue_type": "format", "column": "region", "severity": "low",
                                 "count": int(invalid), "description": f"region has {invalid} rows with inconsistent casing"})
 
     elif task_name == "schema_normalization_dedup":
         # Duplicates
         n_dupes = int(df.duplicated().sum())
         if n_dupes > 0:
-            issues.append({"type": "duplicates", "column": None, "severity": "high",
+            issues.append({"issue_type": "duplicates", "column": None, "severity": "high",
                            "count": n_dupes, "description": f"{n_dupes} duplicate rows detected"})
         # Region variants
         if "region" in df.columns and df["region"].dtype == object:
             valid_regions = set(REGION_VARIANTS.keys())
             invalid_reg   = (~df["region"].isin(valid_regions)).sum()
             if invalid_reg > 0:
-                issues.append({"type": "format", "column": "region", "severity": "medium",
+                issues.append({"issue_type": "format", "column": "region", "severity": "medium",
                                "count": int(invalid_reg), "description": f"region has {invalid_reg} non-standard variants"})
         # Status mixed case
         if "status" in df.columns and df["status"].dtype == object:
             invalid_st = (~df["status"].isin(STATUSES)).sum()
             if invalid_st > 0:
-                issues.append({"type": "format", "column": "status", "severity": "medium",
+                issues.append({"issue_type": "format", "column": "status", "severity": "medium",
                                "count": int(invalid_st), "description": f"status has {invalid_st} non-lowercase variants"})
         # Null variants
         for col in ["email", "phone"]:
             if col in df.columns:
                 null_variants_found = df[col].isin(NULL_VARIANTS).sum()
                 if null_variants_found > 0:
-                    issues.append({"type": "null_variant", "column": col, "severity": "low",
+                    issues.append({"issue_type": "null_variant", "column": col, "severity": "low",
                                    "count": int(null_variants_found),
                                    "description": f"{col} has {null_variants_found} NULL string variants (N/A, none, etc.)"})
         # Invalid ages
         if "age" in df.columns:
             bad_age = ((df["age"] < 0) | (df["age"] > 120)).sum()
             if bad_age > 0:
-                issues.append({"type": "schema", "column": "age", "severity": "high",
+                issues.append({"issue_type": "schema", "column": "age", "severity": "high",
                                "count": int(bad_age), "description": f"age has {bad_age} values outside [0, 120]"})
         # Invalid revenues
         if "annual_revenue" in df.columns:
             bad_rev = (df["annual_revenue"] < 0).sum()
             if bad_rev > 0:
-                issues.append({"type": "schema", "column": "annual_revenue", "severity": "high",
+                issues.append({"issue_type": "schema", "column": "annual_revenue", "severity": "high",
                                "count": int(bad_rev), "description": f"annual_revenue has {bad_rev} negative values"})
 
     return issues
