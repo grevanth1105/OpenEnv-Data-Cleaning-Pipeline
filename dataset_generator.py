@@ -380,25 +380,51 @@ def get_column_stats(df: pd.DataFrame) -> List[Dict]:
         series  = df[col]
         is_num  = pd.api.types.is_numeric_dtype(series)
         nulls   = int(series.isna().sum())
+        n       = max(len(series), 1)
+
+        # Unique count
+        unique_count = int(series.nunique(dropna=True))
 
         # Outlier count for numeric columns
         outliers = 0
         if is_num and len(series.dropna()) > 4:
             q1, q3 = series.quantile([0.25, 0.75])
-            iqr     = q3 - q1
+            iqr    = q3 - q1
             if iqr > 0:
                 outliers = int(((series < q1 - 1.5 * iqr) | (series > q3 + 1.5 * iqr)).sum())
 
-        # Sample values (non-null)
-        sample = series.dropna().head(3).tolist()
-        sample = [v if not isinstance(v, float) or not np.isnan(v) else None for v in sample]
+        # Min / max / mean for numeric
+        min_val  = None
+        max_val  = None
+        mean_val = None
+        if is_num and len(series.dropna()) > 0:
+            min_val  = float(series.min())
+            max_val  = float(series.max())
+            mean_val = round(float(series.mean()), 4)
+
+        # Sample values (non-null, safe)
+        sample = []
+        for v in series.dropna().head(3).tolist():
+            if isinstance(v, float) and np.isnan(v):
+                sample.append(None)
+            elif isinstance(v, (np.integer,)):
+                sample.append(int(v))
+            elif isinstance(v, (np.floating,)):
+                sample.append(round(float(v), 4))
+            else:
+                sample.append(str(v)[:30])
 
         stats.append({
             "name":          col,
             "dtype":         str(series.dtype),
             "null_count":    nulls,
-            "null_pct":      round(nulls / max(len(series), 1), 3),
+            "null_pct":      round(nulls / n, 3),
+            "unique_count":  unique_count,
             "outlier_count": outliers,
+            "has_outliers":  outliers > 0,
+            "min_value":     min_val,
+            "max_value":     max_val,
+            "mean_value":    mean_val,
             "sample_values": sample,
             "is_numeric":    bool(is_num),
         })
