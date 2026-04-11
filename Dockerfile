@@ -31,6 +31,7 @@ COPY models.py             .
 COPY dataset_generator.py  .
 COPY graders.py            .
 COPY code_sandbox.py       .
+COPY llm_judge.py          .
 COPY environment.py        .
 COPY client.py             .
 COPY baseline.py           .

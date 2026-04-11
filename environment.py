@@ -24,6 +24,7 @@ from dataset_generator import (
 )
 from graders import grade
 from code_sandbox import execute_cleaning_code, score_code_execution
+from llm_judge import judge_task3, JUDGE_ENABLED
 from models import (
     ActionType,
     DataCleaningAction,
@@ -225,7 +226,28 @@ class DataCleaningEnvironment:
         grader = self._get_grader()
         score  = grader["score"]
 
-        # Reward = grader score minus cumulative already earned (capped)
+        # Task 3: blend rule-based score with LLM judge score
+        if self._state.task_name == "schema_normalization_dedup" and JUDGE_ENABLED:
+            try:
+                df_before = self._task_data["dataframe"]       # original messy
+                df_after  = self._df                           # cleaned
+                n_dupes   = self._task_data["ground_truth"].get("n_dupes", 0)
+
+                llm_score = judge_task3(
+                    df_before         = df_before,
+                    df_after          = df_after,
+                    n_dupes_original  = n_dupes,
+                )
+                # Blend: 70% rule-based + 30% LLM judge
+                blended = round(0.70 * score + 0.30 * llm_score, 4)
+                blended = float(min(max(blended, 0.001), 0.999))
+                grader["score"]    = blended
+                grader["feedback"] = f"{grader['feedback']} [LLM judge: {llm_score:.3f}]"
+                score = blended
+                print(f"[LLM Judge] rule={grader['score']:.3f} llm={llm_score:.3f} blended={blended:.3f}", flush=True)
+            except Exception as exc:
+                print(f"[LLM Judge] skipped: {exc}", flush=True)
+
         finish_reward = float(np.clip(score * 0.4, 0.05, 0.40))
         self._cumulative_reward += finish_reward
         self._state.cumulative_reward = round(self._cumulative_reward, 4)
@@ -235,7 +257,10 @@ class DataCleaningEnvironment:
             f"[Step {self._state.step_count}] finish() → score={score:.4f}"
         )
 
-        obs = self._build_obs(reward=finish_reward, last_result=f"Episode finished. Score: {score:.4f} — {grader['feedback']}")
+        obs = self._build_obs(
+            reward      = finish_reward,
+            last_result = f"Episode finished. Score: {score:.4f} — {grader['feedback']}",
+        )
         obs.metadata["grader_result"] = grader
         return obs, finish_reward, True, {}
 
