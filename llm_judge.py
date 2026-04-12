@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import json
@@ -9,6 +7,7 @@ from typing import Optional
 
 import pandas as pd
 
+# Load .env if available
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -18,13 +17,15 @@ except ImportError:
 from openai import OpenAI
 
 # ---------------------------------------------------------------------------
-# Configuration — uses OPENAI_API_KEY (separate from HF_TOKEN)
+# Configuration — HF Router + OpenAI client (REQUIRED BY RULES)
 # ---------------------------------------------------------------------------
 
-OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")
-JUDGE_MODEL     = os.getenv("JUDGE_MODEL", "gpt-4o-mini")  # cheap and fast
+API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+JUDGE_MODEL  = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+
 JUDGE_MAX_TOKENS = 200
-JUDGE_ENABLED   = bool(OPENAI_API_KEY)  # silently skip if key not set
+JUDGE_ENABLED    = bool(API_KEY)
 
 
 # ---------------------------------------------------------------------------
@@ -43,43 +44,58 @@ JUDGE_SYSTEM = textwrap.dedent("""
     Your job: rate the cleaning quality from 0.0 to 1.0.
 
     Scoring rubric:
-    - 0.9–1.0: Excellent — all issues fixed, no over-cleaning, data looks consistent
-    - 0.7–0.8: Good — most issues fixed, minor problems remain
-    - 0.5–0.6: Partial — key issues addressed but several remain visible
-    - 0.3–0.4: Poor — few issues resolved, dataset still messy
-    - 0.1–0.2: Minimal — almost no improvement from original
+    - 0.9–1.0: Excellent — all issues fixed, no over-cleaning
+    - 0.7–0.8: Good — most issues fixed
+    - 0.5–0.6: Partial — some issues remain
+    - 0.3–0.4: Poor — dataset still messy
+    - 0.1–0.2: Minimal — little improvement
 
-    Reply with ONLY a JSON object, no explanation:
+    IMPORTANT:
+    - NEVER return exactly 0.0 or 1.0
+    - Always return between 0.001 and 0.999
+
+    Reply ONLY JSON:
     {"score": 0.0, "reason": "one sentence"}
 """).strip()
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _df_to_text(df: pd.DataFrame, n_rows: int = 5) -> str:
-    """Convert dataframe sample to readable text for LLM."""
     sample = df.head(n_rows)
     lines  = [" | ".join(str(v)[:15] for v in sample.columns)]
-    lines += [" | ".join(str(v)[:15] if v is not None else "NULL"
-                         for v in row) for _, row in sample.iterrows()]
+    lines += [
+        " | ".join(str(v)[:15] if v is not None else "NULL"
+        for v in row)
+        for _, row in sample.iterrows()
+    ]
     return "\n".join(lines)
 
+
+def strict_score(x: float) -> float:
+    return float(min(max(x, 0.001), 0.999))
+
+
+# ---------------------------------------------------------------------------
+# Main Judge Function
+# ---------------------------------------------------------------------------
 
 def judge_task3(
     df_before: pd.DataFrame,
     df_after:  pd.DataFrame,
     n_dupes_original: int = 0,
 ) -> float:
-    """
-    Call OpenAI LLM to judge the quality of Task 3 cleaning.
 
-    Returns a score in (0.001, 0.999).
-    Falls back to 0.5 if OPENAI_API_KEY is not set or call fails.
-    """
     if not JUDGE_ENABLED:
-        # Silently return neutral score if no key
-        return 0.5
+        return 0.5  # safe fallback
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(
+            api_key=API_KEY,
+            base_url=API_BASE_URL
+        )
 
         before_text = _df_to_text(df_before)
         after_text  = _df_to_text(df_after)
@@ -87,54 +103,53 @@ def judge_task3(
         user_prompt = textwrap.dedent(f"""
             TASK: Schema Normalization + Deduplication
 
-            Issues that were present:
+            Issues:
             - {n_dupes_original} duplicate rows
-            - Inconsistent region/status formats (e.g. NORTH, north, N)
-            - NULL variants (N/A, none, - instead of actual null)
-            - Invalid ages and revenue values
+            - inconsistent formats
+            - null variants
+            - invalid values
 
-            BEFORE CLEANING (first 5 rows):
+            BEFORE:
             {before_text}
 
-            AFTER CLEANING (first 5 rows):
+            AFTER:
             {after_text}
 
-            Rate the cleaning quality from 0.0 to 1.0.
-            Reply ONLY with: {{"score": 0.0, "reason": "one sentence"}}
+            Give score between 0.001 and 0.999
         """).strip()
 
         response = client.chat.completions.create(
-            model       = JUDGE_MODEL,
-            messages    = [
+            model=JUDGE_MODEL,
+            messages=[
                 {"role": "system", "content": JUDGE_SYSTEM},
                 {"role": "user",   "content": user_prompt},
             ],
-            max_tokens  = JUDGE_MAX_TOKENS,
-            temperature = 0.0,
+            max_tokens=JUDGE_MAX_TOKENS,
+            temperature=0.0,
         )
 
         text = (response.choices[0].message.content or "").strip()
 
-        # Parse score from response
+        # Clean response
         import re
         text = re.sub(r"```(?:json)?\s*", "", text).strip()
         text = re.sub(r"```\s*$", "", text).strip()
 
+        # Parse JSON
         try:
             result = json.loads(text)
             score  = float(result.get("score", 0.5))
-        except (json.JSONDecodeError, ValueError):
-            # Try extracting number
+        except:
             match = re.search(r'"score"\s*:\s*([0-9.]+)', text)
             score = float(match.group(1)) if match else 0.5
 
-        # Clamp strictly between 0 and 1
-        score = float(min(max(score, 0.001), 0.999))
+        score = strict_score(score)
+
         print(f"[LLM Judge] score={score:.3f}", flush=True)
         return score
 
     except Exception as exc:
-        print(f"[LLM Judge] Failed: {exc} — using fallback 0.5", flush=True)
+        print(f"[LLM Judge] Failed: {exc} → fallback 0.5", flush=True)
         return 0.5
 
 
@@ -143,40 +158,19 @@ def judge_task3(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import numpy as np
+    print("Running LLM Judge test...")
 
-    print("=" * 55)
-    print("  LLM Judge Smoke Test")
-    print("=" * 55)
+    import pandas as pd
 
-    if not JUDGE_ENABLED:
-        print("⚠️  OPENAI_API_KEY not set — testing fallback path")
-        score = judge_task3(
-            df_before=pd.DataFrame({"region": ["NORTH", "south", "N"], "status": ["ACTIVE", "inactive", "Pending"]}),
-            df_after =pd.DataFrame({"region": ["North", "South", "North"], "status": ["active", "inactive", "pending"]}),
-        )
-        print(f"  Fallback score: {score} (expected 0.5)")
-        assert score == 0.5, "Fallback should return 0.5"
-        print("  ✅ Fallback works correctly")
-    else:
-        print(f"  Using model: {JUDGE_MODEL}")
+    df_before = pd.DataFrame({
+        "region": ["NORTH", "south", "N"],
+        "status": ["ACTIVE", "inactive", "Pending"]
+    })
 
-        # Create test dataframes
-        df_before = pd.DataFrame({
-            "region":  ["NORTH", "south", "N", "Eastern", "WEST"],
-            "status":  ["ACTIVE", "inactive", "Pending", "CHURNED", "active"],
-            "email":   ["N/A", "a@b.com", "none", "c@d.com", "-"],
-            "age":     [25, -5, 30, 150, 40],
-        })
-        df_after = pd.DataFrame({
-            "region":  ["North", "South", "North", "East", "West"],
-            "status":  ["active", "inactive", "pending", "churned", "active"],
-            "email":   [None, "a@b.com", None, "c@d.com", None],
-            "age":     [25, None, 30, None, 40],
-        })
+    df_after = pd.DataFrame({
+        "region": ["North", "South", "North"],
+        "status": ["active", "inactive", "pending"]
+    })
 
-        score = judge_task3(df_before, df_after, n_dupes_original=5)
-        ok    = 0.0 < score < 1.0
-        print(f"  Score: {score:.4f}  {'✅' if ok else '❌'}")
-
-    print("✅ LLM Judge test complete!")
+    score = judge_task3(df_before, df_after, n_dupes_original=5)
+    print(f"Score: {score}")

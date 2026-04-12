@@ -1,18 +1,3 @@
-"""
-Inference Script — Data Cleaning Pipeline OpenEnv
-===================================================
-MANDATORY ENVIRONMENT VARIABLES:
-    API_BASE_URL   LLM API endpoint  (default: HF Router)
-    MODEL_NAME     Model identifier  (default: Qwen/Qwen2.5-72B-Instruct)
-    HF_TOKEN       HuggingFace token (used as API key)
-    SPACE_URL      HF Space URL      (default: deployed space)
-
-STDOUT FORMAT:
-    [START] task=<task> env=<benchmark> model=<model>
-    [STEP]  step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
-    [END]   success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
-"""
-
 import asyncio
 import json
 import os
@@ -37,12 +22,12 @@ except ImportError:
 
 API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME   = os.getenv("MODEL_NAME")   or "Qwen/Qwen2.5-72B-Instruct"
+MODEL_NAME   = os.getenv("MODEL_NAME")   or "Qwen/Qwen2.5-7B-Instruct"
 SPACE_URL    = os.getenv("SPACE_URL")    or "https://revanth11-data-cleaning-env.hf.space"
 
 BENCHMARK              = "data-cleaning-env"
 TEMPERATURE            = 0.0
-MAX_TOKENS             = 200
+MAX_TOKENS             = 120
 SUCCESS_SCORE_THRESHOLD = 0.5
 
 TASKS = [
@@ -93,9 +78,6 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 
-# ---------------------------------------------------------------------------
-# WebSocket environment client — persistent connection, no worker routing issues
-# ---------------------------------------------------------------------------
 
 class DataCleaningWSEnv:
     """
@@ -294,10 +276,6 @@ async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int, di
             pass
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 async def main() -> None:
     if not API_KEY:
