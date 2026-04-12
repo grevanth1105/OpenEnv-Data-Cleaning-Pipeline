@@ -1,33 +1,50 @@
+"""
+Inference Script — Data Cleaning Pipeline OpenEnv
+===================================================
+MANDATORY ENVIRONMENT VARIABLES:
+    API_BASE_URL   LLM API endpoint  (default: HF Inference API)
+    MODEL_NAME     Model identifier  (default: Qwen/Qwen2.5-7B-Instruct)
+    HF_TOKEN       HuggingFace token — REQUIRED
+
+STDOUT FORMAT (exact — no deviations):
+    [START] task=<task> env=<benchmark> model=<model>
+    [STEP]  step=<n> action=<str> reward=<0.00> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> rewards=<r1,r2,...,rn>
+"""
+
 import asyncio
 import json
 import os
+import re
 import textwrap
-import time
 from typing import Any, Dict, List, Optional
 
 import requests
 import websockets
-from openai import OpenAI
 
-# Load variables from .env file if it exists (python-dotenv)
+# Load .env file if present
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass  # dotenv not installed — fall back to system env vars
+    pass
+
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
-# Configuration — reads from .env file or system environment variables
+# Configuration
+# HF Inference API (api-inference.huggingface.co) has separate limits
+# from HF Router (router.huggingface.co) — use this to avoid 402 errors
 # ---------------------------------------------------------------------------
 
 API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://api-inference.huggingface.co/v1"
 MODEL_NAME   = os.getenv("MODEL_NAME")   or "Qwen/Qwen2.5-7B-Instruct"
 SPACE_URL    = os.getenv("SPACE_URL")    or "https://revanth11-data-cleaning-env.hf.space"
 
-BENCHMARK              = "data-cleaning-env"
-TEMPERATURE            = 0.0
-MAX_TOKENS             = 120
+BENCHMARK               = "data-cleaning-env"
+TEMPERATURE             = 0.0
+MAX_TOKENS              = 150
 SUCCESS_SCORE_THRESHOLD = 0.5
 
 TASKS = [
@@ -53,14 +70,15 @@ SYSTEM_PROMPT = textwrap.dedent("""
     Rules:
     - Fix HIGH severity issues first
     - Numeric nulls use median; categorical nulls use mode
-    - Call finish when progress_pct > 0.85 or no issues remain
-    - Never repeat the same action on the same column
+    - Call finish when progress_pct > 0.85 or issues_remaining == 0
+    - NEVER repeat the same action on the same column
     - Reply with ONLY the JSON object, nothing else
 """).strip()
 
 
 # ---------------------------------------------------------------------------
-# Exact log format required by evaluator
+# Logging — EXACT format per official guidelines
+# IMPORTANT: [END] has NO score= field
 # ---------------------------------------------------------------------------
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -70,24 +88,32 @@ def log_start(task: str, env: str, model: str) -> None:
 def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     error_val = error if error else "null"
     done_val  = str(done).lower()
-    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} "
+        f"done={done_val} error={error_val}",
+        flush=True,
+    )
 
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    """
+    [END] format — strictly NO score= field per official guidelines PDF.
+    Format: [END] success=<bool> steps=<n> rewards=<r1,r2,...>
+    """
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
+# ---------------------------------------------------------------------------
+# WebSocket client — persistent connection, avoids multi-worker 400 errors
+# ---------------------------------------------------------------------------
 
 class DataCleaningWSEnv:
-    """
-    WebSocket client for the Data Cleaning Pipeline environment.
-    Uses /ws endpoint — persistent connection to ONE worker,
-    so reset() and step() always hit the same process.
-    """
-
     def __init__(self, base_url: str) -> None:
-        ws_url = base_url.rstrip("/").replace("https://", "wss://").replace("http://", "ws://")
+        ws_url      = base_url.rstrip("/").replace("https://", "wss://").replace("http://", "ws://")
         self.ws_url = ws_url + "/ws"
         self._ws    = None
 
@@ -105,7 +131,10 @@ class DataCleaningWSEnv:
         return json.loads(raw)
 
     async def reset(self, task_name: str, seed: int = 42, difficulty: float = 0.5) -> Dict:
-        resp = await self._send({"type": "reset", "task_name": task_name, "seed": seed, "difficulty": difficulty})
+        resp = await self._send({
+            "type": "reset", "task_name": task_name,
+            "seed": seed, "difficulty": difficulty,
+        })
         return resp.get("observation", {})
 
     async def step(self, action: Dict) -> Dict:
@@ -137,7 +166,7 @@ def build_user_prompt(obs: Dict, step: int, history: List[str]) -> str:
     ) or "  None remaining — call finish."
 
     col_text = "\n".join(
-        f"  {s.get('name',''):20s} dtype={s.get('dtype',''):10s} nulls={s.get('null_count',0):3d}"
+        f"  {s.get('name',''):20s} dtype={s.get('dtype',''):12s} nulls={s.get('null_count',0):3d}"
         for s in obs.get("column_stats", [])
     )
 
@@ -149,7 +178,7 @@ def build_user_prompt(obs: Dict, step: int, history: List[str]) -> str:
         REMAINING ISSUES:
         {issue_text}
 
-        COLUMN STATISTICS:
+        COLUMNS:
         {col_text}
 
         RECENT ACTIONS:
@@ -157,12 +186,11 @@ def build_user_prompt(obs: Dict, step: int, history: List[str]) -> str:
 
         LAST RESULT: {obs.get('last_action_result', '')}
 
-        Reply with a single JSON cleaning action only.
+        Reply with ONE JSON cleaning action only.
     """).strip()
 
 
 def parse_action(text: str) -> Optional[Dict]:
-    import re
     text = re.sub(r"```(?:json)?\s*", "", text).strip()
     text = re.sub(r"```\s*$", "", text).strip()
     try:
@@ -183,16 +211,17 @@ def parse_action(text: str) -> Optional[Dict]:
 
 
 def get_model_action(client: OpenAI, obs: Dict, step: int, history: List[str]) -> Dict:
+    """Call LLM — falls back to finish if call fails."""
     try:
         completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
+            model       = MODEL_NAME,
+            messages    = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": build_user_prompt(obs, step, history)},
             ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            stream=False,
+            temperature = TEMPERATURE,
+            max_tokens  = MAX_TOKENS,
+            stream      = False,
         )
         text   = (completion.choices[0].message.content or "").strip()
         action = parse_action(text)
@@ -207,13 +236,19 @@ def get_model_action(client: OpenAI, obs: Dict, step: int, history: List[str]) -
 # Single task episode
 # ---------------------------------------------------------------------------
 
-async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int, difficulty: float = 0.5) -> None:
+async def run_task(
+    client:     OpenAI,
+    task_name:  str,
+    max_steps:  int,
+    seed:       int,
+    difficulty: float = 0.5,
+) -> None:
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
 
-    rewards: List[float] = []
-    steps_taken = 0
-    score   = 0.001
-    success = False
+    rewards:     List[float] = []
+    steps_taken: int         = 0
+    score:       float       = 0.001
+    success:     bool        = False
 
     env = DataCleaningWSEnv(base_url=SPACE_URL)
 
@@ -224,7 +259,11 @@ async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int, di
         done = False
         history: List[str] = []
 
-        print(f"[DEBUG] reset ok | rows={obs.get('total_rows')} issues={obs.get('issues_remaining')} diff={difficulty}", flush=True)
+        print(
+            f"[DEBUG] reset ok | rows={obs.get('total_rows')} "
+            f"issues={obs.get('issues_remaining')} diff={difficulty}",
+            flush=True,
+        )
 
         for step in range(1, max_steps + 1):
             if done:
@@ -250,12 +289,15 @@ async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int, di
 
             log_step(step=step, action=action_str, reward=reward, done=done, error=error)
 
-            history.append(f"Step {step}: {action.get('action_type')} col={action.get('column')} -> {reward:+.2f}")
+            history.append(
+                f"Step {step}: {action.get('action_type')} "
+                f"col={action.get('column')} -> {reward:+.2f}"
+            )
 
             if done:
                 break
 
-        # Get final grader score — strictly between 0 and 1 (exclusive)
+        # Final grader score — strictly between 0 and 1
         try:
             grader = await env.grader()
             score  = float(grader.get("score", 0.001))
@@ -277,9 +319,13 @@ async def run_task(client: OpenAI, task_name: str, max_steps: int, seed: int, di
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 async def main() -> None:
     if not API_KEY:
-        print("[DEBUG] HF_TOKEN not set. Run: set HF_TOKEN=hf_...", flush=True)
+        print("[DEBUG] HF_TOKEN not set. Add to .env: HF_TOKEN=hf_...", flush=True)
         return
 
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
@@ -300,10 +346,10 @@ async def main() -> None:
 
     for task in TASKS:
         await run_task(
-            client    = client,
-            task_name = task["name"],
-            max_steps = task["max_steps"],
-            seed      = task["seed"],
+            client     = client,
+            task_name  = task["name"],
+            max_steps  = task["max_steps"],
+            seed       = task["seed"],
             difficulty = task.get("difficulty", 0.5),
         )
         print(flush=True)

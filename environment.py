@@ -36,6 +36,8 @@ TASK_NAMES = [
     "missing_value_imputation",
     "type_errors_and_outliers",
     "schema_normalization_dedup",
+    "data_type_inference",
+    "text_standardization",
 ]
 
 # Max steps per difficulty level
